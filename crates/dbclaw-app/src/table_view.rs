@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use dbclaw_core::filter::{self, Expr};
 use dbclaw_core::model::{
-    Cell, ColumnMeta, DbKind, ForeignKey, NewValue, ObjectRef, PageRequest, RowChange, RowKey, SortDir,
+    Cell, ColumnMeta, DbKind, ForeignKey, NewValue, ObjectRef, RowCount, PageRequest, RowChange, RowKey, SortDir,
     SortSpec,
 };
 use dbclaw_core::mongo_shell;
@@ -85,6 +85,10 @@ pub struct TableView {
     page_size: u64,
     total: Option<u64>,
     counting: bool,
+    /// `total` is a planner/metadata estimate (exact count took too long).
+    total_estimated: bool,
+    /// Counting took too long and there's no estimate.
+    total_unknown: bool,
     loading: bool,
     saving: bool,
     save_seq: u64,
@@ -170,6 +174,8 @@ impl TableView {
             page_size: 500,
             total: None,
             counting: false,
+            total_estimated: false,
+            total_unknown: false,
             loading: true,
             saving: false,
             save_seq: 0,
@@ -280,6 +286,8 @@ impl TableView {
                         // An unfiltered single page: the count is exact already.
                         if this.page == 0 && (rows as u64) < this.page_size {
                             this.total = Some(rows as u64);
+                            this.total_estimated = false;
+                            this.total_unknown = false;
                             this.counting = false;
                         }
                     }
@@ -304,6 +312,8 @@ impl TableView {
 
     fn count(&mut self, cx: &mut Context<Self>) {
         self.total = None;
+        self.total_estimated = false;
+        self.total_unknown = false;
         self.counting = true;
         let request = self.request;
         let conn = self.conn.clone();
@@ -321,8 +331,14 @@ impl TableView {
                     return;
                 }
                 this.counting = false;
-                if let Ok(n) = result {
-                    this.total = Some(n);
+                match result {
+                    Ok(RowCount::Exact(n)) => this.total = Some(n),
+                    Ok(RowCount::Estimate(n)) => {
+                        this.total = Some(n);
+                        this.total_estimated = true;
+                    }
+                    Ok(RowCount::Unknown) => this.total_unknown = true,
+                    Err(_) => {}
                 }
                 cx.notify();
             })
@@ -859,7 +875,14 @@ impl TableView {
             col: table_col.checked_sub(1),
             deleted: self.table.read(cx).delegate().deleted.contains(&row),
             mongo: self.conn.kind() == DbKind::Mongo,
-            outgoing: self.outgoing_fks().map(|f| (f.from_columns[0].clone(), f.target_label())).collect(),
+            outgoing: self
+                .outgoing_fks()
+                .map(|f| {
+                    let path = f.from_columns.join(", ");
+                    let label = if f.inferred { format!("{} via {path}", f.target_label()) } else { f.target_label() };
+                    (f.from_columns[0].clone(), label)
+                })
+                .collect(),
             incoming: self.incoming_fks().map(|f| (f.name.clone(), f.source_label())).collect(),
         };
         let view = cx.entity().downgrade();
@@ -921,27 +944,20 @@ impl TableView {
         let d = self.table.read(cx).delegate();
         let mut parts = Vec::new();
         for (src, dst) in source_cols.iter().zip(target_cols) {
-            let field = filter_ident(dst);
+            let field = filter_ident(dst, d.set.documents.is_some());
             let null = || format!("`{src}` is empty in this row — nothing to follow");
             if let Some(docs) = d.set.documents.as_ref() {
-                let value = docs.get(row).and_then(|doc| doc.get(src));
-                match value {
-                    None | Some(bson::Bson::Null) => return Err(null()),
-                    Some(bson::Bson::Array(items)) => {
-                        let lits: Vec<String> = items.iter().filter_map(bson_literal).collect();
-                        if lits.is_empty() {
-                            return Err(null());
-                        }
-                        parts.push(format!("{field} in [{}]", lits.join(", ")));
-                    }
-                    Some(v) => {
-                        let v = match v {
-                            bson::Bson::Document(doc) => dbclaw_core::mongo_refs::dbref(doc).map(|(_, id)| id),
-                            other => Some(other.clone()),
-                        };
-                        let lit = v.as_ref().and_then(bson_literal).ok_or("this value can't be followed")?;
-                        parts.push(format!("{field} = {lit}"));
-                    }
+                let values: Vec<String> = docs
+                    .get(row)
+                    .map(|doc| dbclaw_core::mongo_refs::values_at_path(doc, src))
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(bson_literal)
+                    .collect();
+                match values.as_slice() {
+                    [] => return Err(null()),
+                    [one] => parts.push(format!("{field} = {one}")),
+                    many => parts.push(format!("{field} in [{}]", many.join(", "))),
                 }
             } else {
                 let ix = d
@@ -961,10 +977,22 @@ impl TableView {
 
     /// Where the reference through `column` points for `row`.
     pub fn reference_target(&self, row: usize, column: &str, cx: &App) -> Result<(ObjectRef, String), String> {
-        let fk = self
-            .outgoing_fks()
-            .find(|f| f.from_columns.iter().any(|c| c == column))
-            .ok_or_else(|| format!("`{column}` is not a reference"))?;
+        let exact = self.outgoing_fks().find(|f| f.from_columns.iter().any(|c| c == column));
+        let fk = match exact {
+            Some(fk) => fk,
+            None => {
+                let nested: Vec<&ForeignKey> =
+                    self.outgoing_fks().filter(|f| top_level(&f.from_columns[0]) == column).collect();
+                match nested.as_slice() {
+                    [one] => *one,
+                    [] => return Err(format!("`{column}` is not a reference")),
+                    many => {
+                        let paths: Vec<&str> = many.iter().map(|f| f.from_columns[0].as_str()).collect();
+                        return Err(format!("`{column}` holds several references; pick one of: {}", paths.join(", ")));
+                    }
+                }
+            }
+        };
         Ok((fk.to.clone(), self.ref_filter(row, &fk.from_columns, &fk.to_columns, cx)?))
     }
 
@@ -992,7 +1020,17 @@ impl TableView {
         let Some(name) = self.table.read(cx).delegate().column_meta(col).map(|c| c.name.clone()) else {
             return;
         };
-        let target = self.reference_target(row, &name, cx);
+        let paths: Vec<String> = self
+            .outgoing_fks()
+            .filter(|f| top_level(&f.from_columns[0]) == name)
+            .map(|f| f.from_columns[0].clone())
+            .collect();
+        if paths.len() > 1 {
+            // Several references inside this column: let the user pick.
+            self.open_row_menu(row, col + 1, window, cx);
+            return;
+        }
+        let target = self.reference_target(row, paths.first().unwrap_or(&name), cx);
         self.emit_open(target, window, cx);
     }
 
@@ -1162,24 +1200,40 @@ fn same_object(a: &ObjectRef, b: &ObjectRef) -> bool {
     a.database == b.database && a.schema == b.schema && a.name == b.name
 }
 
-/// Mark columns that are part of an outgoing foreign key.
+/// Mark columns holding outgoing references. A nested reference
+/// (`address.cityId`) marks its top-level column (`address`); several
+/// references in one column are listed together.
 fn annotate_references(columns: &mut [ColumnMeta], fks: &[ForeignKey], object: &ObjectRef) {
+    for c in columns.iter_mut() {
+        c.references = None;
+    }
     for fk in fks.iter().filter(|f| same_object(&f.from, object)) {
-        for name in &fk.from_columns {
-            if let Some(c) = columns.iter_mut().find(|c| &c.name == name) {
-                c.references = Some(if fk.inferred {
-                    format!("{} (inferred from ObjectIds)", fk.target_label())
-                } else {
-                    fk.target_label()
-                });
+        for path in &fk.from_columns {
+            let top = top_level(path);
+            let Some(c) = columns.iter_mut().find(|c| c.name == top) else { continue };
+            let mut label = fk.target_label();
+            if path != top {
+                label = format!("{path} → {label}");
             }
+            if fk.inferred {
+                label.push_str(" (inferred from ObjectIds)");
+            }
+            c.references = Some(match c.references.take() {
+                Some(prev) => format!("{prev}; {label}"),
+                None => label,
+            });
         }
     }
 }
 
+/// `address.cityId` → `address`
+fn top_level(path: &str) -> &str {
+    path.split('.').next().unwrap_or(path)
+}
 /// A column/field name in the filter language.
-fn filter_ident(name: &str) -> String {
-    if name.chars().all(|ch| ch.is_alphanumeric() || ch == '_') {
+fn filter_ident(name: &str, allow_path: bool) -> String {
+    let plain = |s: &str| !s.is_empty() && s.chars().all(|ch| ch.is_alphanumeric() || ch == '_');
+    if plain(name) || (allow_path && name.split('.').all(plain)) {
         name.to_string()
     } else {
         format!("`{}`", name.replace('`', ""))
@@ -1275,8 +1329,10 @@ impl Render for TableView {
             format!("{}–{}", group_digits(first + 1), group_digits(first + rows_on_page)).into()
         };
         let total_label: SharedString = match self.total {
+            Some(t) if self.total_estimated => format!("of ~{}", group_digits(t)).into(),
             Some(t) => format!("of {}", group_digits(t)).into(),
             None if self.counting => "of …".into(),
+            None if self.total_unknown => "of many".into(),
             None => "".into(),
         };
         let page_size = self.page_size;
@@ -1762,6 +1818,8 @@ impl TableView {
             "first_row_number": self.page * self.page_size + 1,
             "rows_on_page": d.set.rows.len(),
             "total_rows": self.total,
+            "total_is_estimate": self.total_estimated,
+            "total_unknown": self.total_unknown,
             "loading": self.loading,
             "saving": self.saving,
             "error": self.error.as_ref().map(|s| s.to_string()),

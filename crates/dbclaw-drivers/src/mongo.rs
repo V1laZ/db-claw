@@ -1,6 +1,7 @@
 //! MongoDB driver built on the official `mongodb` crate.
 
 use std::collections::HashMap;
+use std::sync::Mutex as StdMutex;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -9,19 +10,38 @@ use bson::{Bson, Document, doc};
 use dbclaw_core::filter;
 use dbclaw_core::model::{
     ApplySummary, Cell, ColumnMeta, ConnectionConfig, ForeignKey, NewValue, ObjectInfo, ObjectKind, ObjectRef,
-    PageRequest, QueryOutput, ResultSet, RowChange, RowKey, SortDir, ValueKind,
+    PageRequest, QueryOutput, ResultSet, RowChange, RowCount, RowKey, SortDir, ValueKind,
 };
 use dbclaw_core::mongo_refs;
 use dbclaw_core::mongo_shell::{self, MongoCommand, UpdateSpec};
-use futures_util::TryStreamExt as _;
+use futures_util::{StreamExt as _, TryStreamExt as _};
 use mongodb::options::ClientOptions;
 use mongodb::results::CollectionType;
 use mongodb::{Client, IndexModel};
+
+/// Documents sampled per collection when inferring references.
+const REF_SAMPLE: i64 = 20;
+/// Most queries one reference inference may issue.
+const REF_QUERY_BUDGET: usize = 60;
+/// Queries in flight at once.
+const REF_CONCURRENCY: usize = 4;
+/// Candidate fields examined per collection.
+const REF_MAX_FIELDS: usize = 16;
+/// Look an id up in every collection only when there are at most this many…
+const REF_PROBE_MAX_COLLECTIONS: usize = 20;
+/// …and only for this many fields per call.
+const REF_PROBE_MAX_FIELDS: usize = 4;
+/// How long inferred references and samples are reused.
+const REF_CACHE_TTL: Duration = Duration::from_secs(600);
+
+type Cache<T> = StdMutex<HashMap<(String, String), (std::time::Instant, T)>>;
 
 pub struct MongoConnection {
     client: Client,
     default_db: Option<String>,
     version: String,
+    ref_cache: Cache<Vec<ForeignKey>>,
+    sample_cache: Cache<Vec<Document>>,
 }
 
 impl MongoConnection {
@@ -48,7 +68,13 @@ impl MongoConnection {
         let auth_db = default_db.clone().unwrap_or_else(|| "admin".into());
         let info = client.database(&auth_db).run_command(doc! { "buildInfo": 1 }).await?;
         let version = info.get_str("version").unwrap_or("?").to_string();
-        Ok(MongoConnection { client, default_db, version: format!("MongoDB {version}") })
+        Ok(MongoConnection {
+            client,
+            default_db,
+            version: format!("MongoDB {version}"),
+            ref_cache: StdMutex::new(HashMap::new()),
+            sample_cache: StdMutex::new(HashMap::new()),
+        })
     }
 
     pub fn default_database(&self) -> Option<String> {
@@ -121,15 +147,24 @@ impl MongoConnection {
         Ok(docs_to_result_set(docs))
     }
 
-    pub async fn count(&self, req: &PageRequest) -> Result<u64> {
+    pub async fn count(&self, req: &PageRequest) -> Result<RowCount> {
         let coll = self.collection(&req.object);
         if req.filter.is_none() && req.object.kind == ObjectKind::Collection {
-            return Ok(coll.estimated_document_count().await?);
+            // Collection metadata: free, and exact on unsharded collections.
+            return Ok(RowCount::Exact(coll.estimated_document_count().await?));
         }
-        Ok(coll
+        match coll
             .count_documents(Self::filter_doc(req)?)
-            .max_time(Duration::from_secs(10))
-            .await?)
+            .max_time(Duration::from_secs(3))
+            .await
+        {
+            Ok(n) => Ok(RowCount::Exact(n)),
+            // MaxTimeMSExpired: too expensive to count.
+            Err(e) if matches!(*e.kind, mongodb::error::ErrorKind::Command(ref c) if c.code == 50) => {
+                Ok(RowCount::Unknown)
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub async fn apply(&self, object: &ObjectRef, changes: Vec<RowChange>) -> Result<ApplySummary> {
@@ -231,26 +266,73 @@ impl MongoConnection {
     /// Infer references from and to a collection (MongoDB has no foreign
     /// keys). A guess counts only once a sampled id is found as an `_id` in
     /// the target collection — ObjectIds are globally unique.
+    ///
+    /// Kept deliberately light for production servers: real collections
+    /// only (views would run their pipelines), at most [`REF_QUERY_BUDGET`]
+    /// small queries per call, [`REF_CONCURRENCY`] in flight, a 1 s server
+    /// time limit each, and results cached for [`REF_CACHE_TTL`].
     pub async fn guess_references(&self, object: &ObjectRef) -> Result<Vec<ForeignKey>> {
-        const SAMPLE: i64 = 20;
-        const MAX_PROBE: usize = 30;
-        const MAX_FIELDS: usize = 12;
+        let key = (object.database.clone(), object.name.clone());
+        if let Some((at, fks)) = self.ref_cache.lock().unwrap().get(&key)
+            && at.elapsed() < REF_CACHE_TTL
+        {
+            return Ok(fks.clone());
+        }
+
         let db = self.client.database(&object.database);
-        let mut names = db.list_collection_names().await?;
-        names.retain(|n| !n.starts_with("system."));
+        let budget = std::sync::atomic::AtomicUsize::new(REF_QUERY_BUDGET);
+        let spend = || {
+            budget
+                .try_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed, |b| b.checked_sub(1))
+                .is_ok()
+        };
+        let limit = Duration::from_millis(1000);
+
+        // Real collections only: sampling a view runs its whole pipeline.
+        let specs: Vec<_> = db
+            .list_collections()
+            .filter(doc! { "type": "collection" })
+            .await?
+            .try_collect()
+            .await?;
+        let mut names: Vec<String> =
+            specs.into_iter().map(|s| s.name).filter(|n| !n.starts_with("system.")).collect();
         names.sort();
 
-        let sample = |coll: &str, n: i64| {
-            let c = db.collection::<Document>(coll);
+        let sample = |coll: String, n: i64| {
+            let c = db.collection::<Document>(&coll);
+            let cache = &self.sample_cache;
+            let key = (object.database.clone(), coll);
+            let allowed = spend;
             async move {
-                let docs: Vec<Document> = c.find(doc! {}).limit(n).await?.try_collect().await?;
-                Ok::<_, anyhow::Error>(docs)
+                if let Some((at, docs)) = cache.lock().unwrap().get(&key)
+                    && at.elapsed() < REF_CACHE_TTL
+                {
+                    return docs.clone();
+                }
+                if !allowed() {
+                    return Vec::new();
+                }
+                let docs: Vec<Document> = match c.find(doc! {}).limit(n).max_time(limit).await {
+                    Ok(cursor) => cursor.try_collect().await.unwrap_or_default(),
+                    Err(_) => Vec::new(),
+                };
+                cache.lock().unwrap().insert(key, (std::time::Instant::now(), docs.clone()));
+                docs
             }
         };
         let exists = |coll: &str, id: &Bson| {
             let c = db.collection::<Document>(coll);
             let filter = doc! { "_id": id.clone() };
-            async move { c.count_documents(filter).limit(1).await.map(|n| n > 0).unwrap_or(false) }
+            let allowed = spend();
+            async move {
+                allowed
+                    && c.find_one(filter)
+                        .projection(doc! { "_id": 1 })
+                        .max_time(limit)
+                        .await
+                        .is_ok_and(|d| d.is_some())
+            }
         };
         let coll_ref = |name: &str| ObjectRef {
             database: object.database.clone(),
@@ -270,8 +352,9 @@ impl MongoConnection {
         let mut out = Vec::new();
 
         // Outgoing: fields of this collection pointing elsewhere.
-        let docs = sample(&object.name, SAMPLE).await?;
-        for cand in mongo_refs::candidate_fields(&docs).into_iter().take(MAX_FIELDS) {
+        let docs = sample(object.name.clone(), REF_SAMPLE).await;
+        let mut fallbacks = 0;
+        for cand in mongo_refs::candidate_fields(&docs).into_iter().take(REF_MAX_FIELDS) {
             if let Some(target) = &cand.dbref {
                 if names.contains(target) {
                     out.push(fk(&object.name, &cand.field, target));
@@ -279,25 +362,33 @@ impl MongoConnection {
                 continue;
             }
             let base = mongo_refs::reference_base(&cand.field);
-            let by_name: Vec<&String> = names.iter().filter(|c| mongo_refs::collection_matches(&base, c)).collect();
             let mut target = None;
-            for c in &by_name {
+            for c in names.iter().filter(|c| mongo_refs::collection_matches(&base, c)) {
                 if exists(c, &cand.sample).await {
-                    target = Some((*c).clone());
+                    target = Some(c.clone());
                     break;
                 }
             }
-            // Unusual names (createdBy, owner…): look the id up everywhere.
-            if target.is_none() && names.len() <= MAX_PROBE {
-                let probes = names.iter().map(|c| {
-                    let found = exists(c, &cand.sample);
-                    async move { (c, found.await) }
-                });
-                target = futures_util::future::join_all(probes)
-                    .await
+            // Unusual names (createdBy, owner…): look the id up everywhere,
+            // but only on small databases and for a few fields.
+            if target.is_none() && names.len() <= REF_PROBE_MAX_COLLECTIONS && fallbacks < REF_PROBE_MAX_FIELDS {
+                fallbacks += 1;
+                let lookups: Vec<_> = names
+                    .clone()
                     .into_iter()
-                    .find(|(_, found)| *found)
-                    .map(|(c, _)| c.clone());
+                    .map(|c: String| {
+                        let found = exists(&c, &cand.sample);
+                        async move { (c, found.await) }
+                    })
+                    .collect();
+                let probes = futures_util::stream::iter(lookups).buffer_unordered(REF_CONCURRENCY);
+                futures_util::pin_mut!(probes);
+                while let Some((c, found)) = probes.next().await {
+                    if found {
+                        target = Some(c);
+                        break;
+                    }
+                }
             }
             if let Some(t) = target {
                 out.push(fk(&object.name, &cand.field, &t));
@@ -305,12 +396,21 @@ impl MongoConnection {
         }
 
         // Incoming: fields of other collections whose name points here.
-        let others: Vec<&String> = names.iter().filter(|c| **c != object.name).take(MAX_PROBE).collect();
-        let samples = futures_util::future::join_all(others.iter().map(|c| {
-            let s = sample(c, 5);
-            async move { (*c, s.await.unwrap_or_default()) }
-        }))
-        .await;
+        let others: Vec<String> = names
+            .iter()
+            .filter(|c| **c != object.name)
+            .take(REF_PROBE_MAX_COLLECTIONS)
+            .cloned()
+            .collect();
+        let sampling: Vec<_> = others
+            .into_iter()
+            .map(|c: String| {
+                let s = sample(c.clone(), REF_SAMPLE);
+                async move { (c, s.await) }
+            })
+            .collect();
+        let samples: Vec<(String, Vec<Document>)> =
+            futures_util::stream::iter(sampling).buffer_unordered(REF_CONCURRENCY).collect().await;
         for (coll, docs) in samples {
             for cand in mongo_refs::candidate_fields(&docs) {
                 let points_here = match &cand.dbref {
@@ -318,10 +418,12 @@ impl MongoConnection {
                     None => mongo_refs::collection_matches(&mongo_refs::reference_base(&cand.field), &object.name),
                 };
                 if points_here && exists(&object.name, &cand.sample).await {
-                    out.push(fk(coll, &cand.field, &object.name));
+                    out.push(fk(&coll, &cand.field, &object.name));
                 }
             }
         }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        self.ref_cache.lock().unwrap().insert(key, (std::time::Instant::now(), out.clone()));
         Ok(out)
     }
 

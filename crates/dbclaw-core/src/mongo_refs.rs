@@ -8,42 +8,102 @@
 
 use bson::{Bson, Document};
 
-/// A top-level field that looks like a reference.
+/// Maximum nesting depth scanned for references (`a.b.c.d`).
+pub const MAX_DEPTH: usize = 4;
+
+/// A field (top-level or nested, as a dotted path) that looks like a
+/// reference.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Candidate {
+    /// Dotted path, e.g. `userId`, `address.cityId`, `items.productId`.
     pub field: String,
     /// An id seen in this field (the `$id` of a DBRef).
     pub sample: Bson,
-    /// The field holds arrays of ids.
+    /// The path holds several ids per document (an array of ids, or a field
+    /// inside an array of sub-documents).
     pub array: bool,
     /// Target collection named by a DBRef (`{$ref, $id}`).
     pub dbref: Option<String>,
 }
 
-/// Fields (except `_id`) holding ObjectIds, arrays of ObjectIds or DBRefs,
-/// in first-seen order.
+/// Fields holding ObjectIds, arrays of ObjectIds or DBRefs, including ones
+/// nested in sub-documents and in arrays of sub-documents (up to
+/// [`MAX_DEPTH`] levels), in first-seen order. `_id` itself is skipped.
 pub fn candidate_fields(docs: &[Document]) -> Vec<Candidate> {
     let mut out: Vec<Candidate> = Vec::new();
     for doc in docs {
-        for (k, v) in doc {
-            if k == "_id" || out.iter().any(|c| &c.field == k) {
-                continue;
-            }
-            let found = match v {
-                Bson::ObjectId(_) => Some((v.clone(), false, None)),
-                Bson::Array(items) => items
-                    .iter()
-                    .find(|i| matches!(i, Bson::ObjectId(_)))
-                    .map(|i| (i.clone(), true, None)),
-                Bson::Document(d) => dbref(d).map(|(coll, id)| (id, false, Some(coll))),
-                _ => None,
-            };
-            if let Some((sample, array, dbref)) = found {
-                out.push(Candidate { field: k.clone(), sample, array, dbref });
-            }
-        }
+        scan(doc, "", false, 1, &mut out);
     }
     out
+}
+
+fn scan(doc: &Document, prefix: &str, in_array: bool, depth: usize, out: &mut Vec<Candidate>) {
+    for (k, v) in doc {
+        if prefix.is_empty() && k == "_id" {
+            continue;
+        }
+        let path = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
+        let mut push = |sample: Bson, array: bool, dbref: Option<String>| {
+            if !out.iter().any(|c| c.field == path) {
+                out.push(Candidate { field: path.clone(), sample, array, dbref });
+            }
+        };
+        match v {
+            Bson::ObjectId(_) => push(v.clone(), in_array, None),
+            Bson::Document(d) => match dbref(d) {
+                Some((coll, id)) => push(id, in_array, Some(coll)),
+                None if depth < MAX_DEPTH => scan(d, &path, in_array, depth + 1, out),
+                None => {}
+            },
+            Bson::Array(items) => {
+                if let Some(id) = items.iter().find(|i| matches!(i, Bson::ObjectId(_))) {
+                    push(id.clone(), true, None);
+                } else if let Some((coll, id)) =
+                    items.iter().find_map(|i| i.as_document().and_then(dbref))
+                {
+                    push(id, true, Some(coll));
+                } else if depth < MAX_DEPTH {
+                    // Array of sub-documents: `items.productId`.
+                    for item in items.iter().filter_map(Bson::as_document) {
+                        scan(item, &path, true, depth + 1, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// All values at a dotted path, descending through arrays like MongoDB
+/// queries do (`items.productId` collects the id of every item). DBRefs are
+/// replaced by their `$id`; arrays at the end of the path are flattened.
+pub fn values_at_path(doc: &Document, path: &str) -> Vec<Bson> {
+    let mut out = Vec::new();
+    let segments: Vec<&str> = path.split('.').collect();
+    collect(&Bson::Document(doc.clone()), &segments, &mut out);
+    out
+}
+
+fn collect(value: &Bson, segments: &[&str], out: &mut Vec<Bson>) {
+    match (value, segments.split_first()) {
+        (Bson::Array(items), _) => {
+            for item in items {
+                collect(item, segments, out);
+            }
+        }
+        (Bson::Document(d), Some((first, rest))) => {
+            if let Some(v) = d.get(*first) {
+                collect(v, rest, out);
+            }
+        }
+        (Bson::Document(d), None) => match dbref(d) {
+            Some((_, id)) => out.push(id),
+            None => out.push(value.clone()),
+        },
+        (Bson::Null, None) => {}
+        (v, None) => out.push(v.clone()),
+        _ => {}
+    }
 }
 
 /// `{$ref: "users", $id: …}` → ("users", id)
@@ -56,6 +116,7 @@ pub fn dbref(d: &Document) -> Option<(String, Bson)> {
 /// The entity name a field refers to: `userId` → `user`, `author_ids` →
 /// `author`, `owner` → `owner`.
 pub fn reference_base(field: &str) -> String {
+    let field = field.rsplit('.').next().unwrap_or(field);
     for suffix in ["_ids", "Ids", "IDs", "_id", "Id", "ID"] {
         if let Some(base) = field.strip_suffix(suffix)
             && !base.is_empty() {
@@ -106,6 +167,8 @@ mod tests {
         assert_eq!(reference_base("ownerID"), "owner");
         assert_eq!(reference_base("owner"), "owner");
         assert_eq!(reference_base("Id"), "Id");
+        assert_eq!(reference_base("address.cityId"), "city");
+        assert_eq!(reference_base("items.productId"), "product");
     }
 
     #[test]
@@ -136,5 +199,41 @@ mod tests {
         assert!(c[1].array);
         assert_eq!(c[2].dbref.as_deref(), Some("people"));
         assert_eq!(c[2].sample, Bson::ObjectId(a));
+    }
+
+    #[test]
+    fn nested_candidates() {
+        let (city, p1, p2, u) = (ObjectId::new(), ObjectId::new(), ObjectId::new(), ObjectId::new());
+        let docs = vec![doc! {
+            "_id": ObjectId::new(),
+            "address": { "street": "x", "cityId": city, "geo": { "a": { "b": { "deepId": u } } } },
+            "items": [ { "productId": p1, "qty": 1 }, { "productId": p2, "qty": 2 } ],
+            "audit": { "by": { "$ref": "users", "$id": u } },
+        }];
+        let c = candidate_fields(&docs);
+        let fields: Vec<&str> = c.iter().map(|c| c.field.as_str()).collect();
+        // `address.geo.a.b.deepId` is 5 levels deep: beyond MAX_DEPTH.
+        assert_eq!(fields, vec!["address.cityId", "items.productId", "audit.by"]);
+        assert!(!c[0].array);
+        assert!(c[1].array);
+        assert_eq!(c[2].dbref.as_deref(), Some("users"));
+    }
+
+    #[test]
+    fn path_values() {
+        let (city, p1, p2, u) = (ObjectId::new(), ObjectId::new(), ObjectId::new(), ObjectId::new());
+        let d = doc! {
+            "address": { "cityId": city },
+            "items": [ { "productId": p1 }, { "productId": p2 }, { "qty": 3 } ],
+            "tagIds": [u, u],
+            "owner": { "$ref": "users", "$id": u },
+            "gone": null,
+        };
+        assert_eq!(values_at_path(&d, "address.cityId"), vec![Bson::ObjectId(city)]);
+        assert_eq!(values_at_path(&d, "items.productId"), vec![Bson::ObjectId(p1), Bson::ObjectId(p2)]);
+        assert_eq!(values_at_path(&d, "tagIds"), vec![Bson::ObjectId(u), Bson::ObjectId(u)]);
+        assert_eq!(values_at_path(&d, "owner"), vec![Bson::ObjectId(u)]);
+        assert!(values_at_path(&d, "gone").is_empty());
+        assert!(values_at_path(&d, "address.missing").is_empty());
     }
 }

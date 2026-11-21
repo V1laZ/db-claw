@@ -14,7 +14,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use dbclaw_core::filter::{self, SqlColumn};
 use dbclaw_core::model::{
     ApplySummary, Cell, ColumnMeta, ConnectionConfig, ForeignKey, NewValue, ObjectInfo, ObjectKind, ObjectRef,
-    PageRequest, QueryOutput, ResultSet, RowChange, ValueKind,
+    PageRequest, QueryOutput, ResultSet, RowChange, RowCount, ValueKind,
 };
 use dbclaw_core::sql::{self, quote_literal};
 use futures_util::{StreamExt as _, TryStreamExt as _};
@@ -23,6 +23,10 @@ use tokio_postgres::{AsyncMessage, CancelToken, Client, SimpleQueryMessage, Simp
 
 /// Max number of pooled "browse" connections per database.
 const BROWSE_POOL: usize = 3;
+/// Time limit for grid queries (pages, metadata) on browse connections.
+const BROWSE_TIMEOUT_MS: u32 = 30_000;
+/// Time limit for exact row counts; beyond it an estimate is shown.
+const COUNT_TIMEOUT_MS: u32 = 3_000;
 
 pub struct PgConnection {
     base: tokio_postgres::Config,
@@ -122,7 +126,14 @@ impl PgConnection {
         match best {
             Some(c) if Arc::strong_count(&c) <= 2 || pool.len() >= BROWSE_POOL => Ok(c),
             _ => {
-                let client = Arc::new(self.connect(database).await?);
+                let client = self.connect(database).await?;
+                // Grid queries must never run away on a production server.
+                client
+                    .client
+                    .simple_query(&format!("SET statement_timeout = {BROWSE_TIMEOUT_MS}"))
+                    .await
+                    .map_err(|e| anyhow!(format_pg_error(&e)))?;
+                let client = Arc::new(client);
                 pool.push(client.clone());
                 Ok(client)
             }
@@ -309,12 +320,41 @@ impl PgConnection {
         Ok(ResultSet { columns: columns.to_vec(), rows, ctids, ..Default::default() })
     }
 
-    pub async fn count(&self, req: &PageRequest, columns: &[ColumnMeta]) -> Result<u64> {
+    pub async fn count(&self, req: &PageRequest, columns: &[ColumnMeta]) -> Result<RowCount> {
         let c = self.browse_client(&req.object.database).await?;
         let where_sql = Self::where_sql(req, columns)?;
-        let query = sql::count_rows(&req.object, where_sql.as_deref());
-        let v = simple_scalar(&c.client, &query).await?;
-        Ok(v.parse().unwrap_or(0))
+        let count = sql::count_rows(&req.object, where_sql.as_deref());
+        // One implicit transaction: if the count hits the timeout the whole
+        // batch rolls back, including the SET, so the session timeout stays.
+        let query = format!(
+            "SET statement_timeout = {COUNT_TIMEOUT_MS}; {count}; SET statement_timeout = {BROWSE_TIMEOUT_MS}"
+        );
+        match c.client.simple_query(&query).await {
+            Ok(msgs) => {
+                let n = msgs.iter().find_map(|m| match m {
+                    SimpleQueryMessage::Row(r) => r.get(0).and_then(|v| v.parse().ok()),
+                    _ => None,
+                });
+                Ok(RowCount::Exact(n.unwrap_or(0)))
+            }
+            Err(e) if e.code() == Some(&tokio_postgres::error::SqlState::QUERY_CANCELED) => {
+                if where_sql.is_some() {
+                    return Ok(RowCount::Unknown);
+                }
+                // Unfiltered: the planner's estimate is free.
+                let regclass = quote_literal(&sql::qualified_name(&req.object))?;
+                let est = simple_scalar(
+                    &c.client,
+                    &format!("SELECT reltuples::bigint FROM pg_class WHERE oid = {regclass}::regclass"),
+                )
+                .await?;
+                Ok(match est.parse::<i64>() {
+                    Ok(n) if n >= 0 => RowCount::Estimate(n as u64),
+                    _ => RowCount::Unknown,
+                })
+            }
+            Err(e) => Err(anyhow!(format_pg_error(&e))),
+        }
     }
 
     pub async fn apply(&self, object: &ObjectRef, changes: Vec<RowChange>) -> Result<ApplySummary> {

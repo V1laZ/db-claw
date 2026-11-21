@@ -62,7 +62,7 @@ async fn postgres_browse_filter_edit() {
     };
     let page = conn.fetch_page(&req, &cols).await.unwrap();
     assert!(!page.rows.is_empty());
-    let n = conn.count(&req, &cols).await.unwrap();
+    let RowCount::Exact(n) = conn.count(&req, &cols).await.unwrap() else { panic!("expected an exact count") };
     assert!(n >= page.rows.len() as u64);
 
     // Insert, update, delete in one transaction.
@@ -140,6 +140,33 @@ async fn postgres_foreign_keys() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn postgres_count_is_time_limited() {
+    if !live() {
+        return;
+    }
+    let conn = Connection::open(pg_config()).await.unwrap();
+    let objs = conn.list_objects("shop").await.unwrap();
+    let audit = find(&objs, "public", "audit_log").clone();
+    let cols = conn.columns(&audit).await.unwrap();
+    let req = PageRequest { object: audit.clone(), filter: None, sort: vec![], offset: 0, limit: 10 };
+    assert!(matches!(conn.count(&req, &cols).await.unwrap(), RowCount::Exact(_)));
+
+    // Another session locks the table, so counting has to wait.
+    let locker = conn.open_session("shop").await.unwrap();
+    locker.execute("BEGIN; LOCK TABLE audit_log IN ACCESS EXCLUSIVE MODE", 10, None).await.unwrap();
+    let started = std::time::Instant::now();
+    let unfiltered = conn.count(&req, &cols).await.unwrap();
+    let filtered_req = PageRequest { filter: filter::parse("actor = \"admin\"").unwrap(), ..req.clone() };
+    let filtered = conn.count(&filtered_req, &cols).await.unwrap();
+    locker.execute("ROLLBACK", 10, None).await.unwrap();
+    assert!(matches!(unfiltered, RowCount::Estimate(_)), "{unfiltered:?}");
+    assert_eq!(filtered, RowCount::Unknown);
+    assert!(started.elapsed() < std::time::Duration::from_secs(10), "{:?}", started.elapsed());
+    // The session timeout is back to normal: a quick count works again.
+    assert!(matches!(conn.count(&req, &cols).await.unwrap(), RowCount::Exact(_)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn postgres_console() {
     if !live() {
         return;
@@ -203,19 +230,26 @@ async fn mongo_browse_filter_edit_console() {
     let page = conn.fetch_page(&req, &[]).await.unwrap();
     assert_eq!(page.rows.len(), 20);
     assert_eq!(page.columns[0].name, "_id");
-    assert!(conn.count(&req, &[]).await.unwrap() > 20);
+    assert!(matches!(conn.count(&req, &[]).await.unwrap(), RowCount::Exact(n) if n > 20));
 
     // Inferred references: orders.userId → users (outgoing from orders,
     // incoming to users); products has none.
     let orders = find(&objs, "", "orders").clone();
     let refs = conn.foreign_keys(&orders).await.unwrap();
-    let r = refs.iter().find(|f| f.from.name == "orders").expect("orders.userId inferred");
+    let r = refs.iter().find(|f| f.from_columns == ["userId"]).expect("orders.userId inferred");
     assert_eq!((r.from_columns[0].as_str(), r.to.name.as_str()), ("userId", "users"));
     assert!(r.inferred);
     let incoming = conn.foreign_keys(&users).await.unwrap();
     assert!(incoming.iter().any(|f| f.from.name == "orders" && f.to.name == "users"), "{incoming:?}");
+    // Nested: users.address.cityId → cities, orders.items.productId → products
+    // (docker/mongo/02-nested-refs.js).
+    assert!(refs.iter().any(|f| f.from_columns == ["items.productId"] && f.to.name == "products"), "{refs:?}");
+    let user_refs = conn.foreign_keys(&users).await.unwrap();
+    assert!(user_refs.iter().any(|f| f.from_columns == ["address.cityId"] && f.to.name == "cities"), "{user_refs:?}");
     let products = find(&objs, "", "products").clone();
-    assert!(conn.foreign_keys(&products).await.unwrap().is_empty());
+    let product_refs = conn.foreign_keys(&products).await.unwrap();
+    assert!(product_refs.iter().all(|f| f.to.name == "products"), "{product_refs:?}");
+    assert!(product_refs.iter().any(|f| f.from.name == "orders" && f.from_columns == ["items.productId"]));
 
     let session = conn.open_session("shop").await.unwrap();
     let out = session

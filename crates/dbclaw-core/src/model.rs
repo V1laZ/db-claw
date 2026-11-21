@@ -300,6 +300,17 @@ pub struct QueryOutput {
     pub elapsed: Duration,
 }
 
+/// Result of counting rows. Counting is time-limited so it can't load the
+/// server: when the limit hits, a cheap estimate (or nothing) is returned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowCount {
+    Exact(u64),
+    /// From planner statistics / collection metadata.
+    Estimate(u64),
+    /// Too expensive to count within the time limit.
+    Unknown,
+}
+
 /// Sort direction for the grid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SortDir {

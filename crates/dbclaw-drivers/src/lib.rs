@@ -14,7 +14,7 @@ use std::sync::{Arc, OnceLock};
 use anyhow::Result;
 use dbclaw_core::model::{
     ApplySummary, ColumnMeta, ConnectionConfig, DbKind, ForeignKey, ObjectInfo, ObjectRef, PageRequest,
-    QueryOutput, ResultSet, RowChange,
+    QueryOutput, ResultSet, RowChange, RowCount,
 };
 
 pub use mongo::{bson_kind, docs_to_result_set};
@@ -122,7 +122,8 @@ impl Connection {
         }
     }
 
-    pub async fn count(&self, req: &PageRequest, columns: &[ColumnMeta]) -> Result<u64> {
+    /// Count rows matching the page's filter, within a time limit.
+    pub async fn count(&self, req: &PageRequest, columns: &[ColumnMeta]) -> Result<RowCount> {
         match self {
             Connection::Pg(c) => c.count(req, columns).await,
             Connection::Mongo(c) => c.count(req).await,

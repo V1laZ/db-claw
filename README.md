@@ -43,7 +43,7 @@ MongoDB Atlas-style `mongodb+srv://` hosts are supported.
 | Sidebar | Click a connection to connect, then a table / collection to open it. ⌘P searches tables. Right-click for consoles, refresh, edit, delete. |
 | Filter bar (⌘F) | Universal filter language, applied with Enter. `?` shows the cheat sheet. Right-click a cell → *Filter by this value*. |
 | Grid | Click a header to sort (server-side). Double-click / Enter / F2 edits a cell, ⌘⇧N sets NULL, ⌘⌫ marks a row for deletion, ⌘C copies, ⌘[ / ⌘] pages. |
-| References | Foreign-key columns show a link icon in the header and an ↗ arrow in each cell. Click it to open the referenced row. Right-click a row → *Referenced by* opens the rows of other tables that point to it. On MongoDB, references are inferred: fields holding ObjectIds (or arrays of them, or DBRefs) are matched to collections by name (`userId` → `users`) and confirmed by finding a sampled id in that collection; unusual names fall back to looking the id up in every collection. **←/→** left of the filter (⌥← / ⌥→) go back and forward, like a browser, restoring each tab's filter and page. |
+| References | Foreign-key columns show a link icon in the header and an ↗ arrow in each cell. Click it to open the referenced row. Right-click a row → *Referenced by* opens the rows of other tables that point to it. On MongoDB, references are inferred: fields holding ObjectIds (or arrays of them, or DBRefs), including nested ones like `address.cityId` and `items.productId`, are matched to collections by name (`userId` → `users`) and confirmed by finding a sampled id in that collection; unusual names fall back to looking the id up in every collection. **←/→** left of the filter (⌥← / ⌥→) go back and forward, like a browser, restoring each tab's filter and page. |
 | Saving | Edited cells turn yellow, deleted rows are struck through. ⌘S saves, *Discard* reverts. Postgres saves in one transaction and every UPDATE/DELETE must hit exactly one row (by primary key, or `ctid` for tables without one). |
 | Insert | ⌘I or **+**: a form for SQL tables (empty = column default / NULL), a relaxed-JSON editor for Mongo. Right-click → *Duplicate row…* pre-fills it. |
 | Console (⌘T) | ⌘↵ runs the statement at the cursor (or the selection); ⇧⌘↵ runs everything; ⌘. cancels. In a Mongo console a bare `{…}` filter runs `find` on the current collection. |
@@ -67,6 +67,25 @@ address.city = "Prague"   `odd name` = 1   created > date("2024-01-01")   _id = 
 On Postgres, dotted paths into `json`/`jsonb` columns become `#>>` lookups, and array
 columns use `= ANY(…)`. Values are inlined as untyped literals, so Postgres coerces
 them to each column's type. Full reference: `crates/dbclaw-core/src/filter/mod.rs`.
+
+## Load on the database
+
+DB Claw is built to be safe to point at production servers:
+
+- **Pages** are fetched with `LIMIT` (500 rows by default) and ordered by the primary key, so a
+  page read is an index scan.
+- **Row counts are time-limited to 3 s.** Postgres falls back to the planner's estimate
+  (`of ~1,234,567`) or to `of many` for filters; MongoDB uses collection metadata for unfiltered
+  counts and `maxTimeMS` for filtered ones.
+- **Grid queries** run with a 30 s `statement_timeout`. Console queries are unlimited (you can
+  cancel them with ⌘.).
+- **Connections:** at most 3 browse connections plus 1 for saving per Postgres database; each
+  console tab has its own session.
+- **Inferring MongoDB references** samples 20 documents per collection and confirms guesses with
+  `_id` lookups. It reads real collections only (never views), issues at most 60 queries per
+  collection (4 at a time, 1 s server limit each), and caches results for 10 minutes. Measured
+  with the MongoDB profiler on the sample database: opening a collection costs 10 queries, the
+  next one 5, and a refresh 3, each under 1 ms.
 
 ## Automation: CLI and MCP
 
