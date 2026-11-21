@@ -19,6 +19,9 @@ use gpui_kit::*;
 
 use crate::util::single_line;
 
+/// Horizontal padding inside data cells.
+const CELL_PAD: Pixels = px(8.);
+
 /// Max characters drawn per cell (the full value stays in memory).
 const CELL_DISPLAY_CHARS: usize = 300;
 
@@ -226,6 +229,8 @@ impl TableDelegate for GridDelegate {
         let meta = &self.set.columns[data_col];
         let mut column = Column::new(SharedString::from(format!("c{data_col}")), meta.name.clone())
             .width(self.widths.get(data_col).copied().unwrap_or(px(120.)))
+            // No left padding: cells draw it themselves next to the divider.
+            .paddings(Edges { top: px(0.), bottom: px(0.), left: px(0.), right: CELL_PAD })
             .movable(false)
             .sortable();
         if let Some((c, sort)) = self.sort
@@ -250,8 +255,12 @@ impl TableDelegate for GridDelegate {
         let meta = &self.set.columns[col_ix - 1];
         h_flex()
             .w_full()
+            .h_full()
             .gap_1()
             .overflow_hidden()
+            .pl(CELL_PAD)
+            .border_l_1()
+            .border_color(cx.theme().table_row_border)
             .when(meta.is_pk, |this| {
                 this.child(
                     Icon::new(Lucide::KeyRound).xsmall().text_color(cx.theme().warning),
@@ -331,6 +340,11 @@ impl TableDelegate for GridDelegate {
             && editor.row == row_ix && editor.col == data_col {
                 return div()
                     .w_full()
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .border_l_1()
+                    .border_color(cx.theme().table_row_border)
                     .child(Input::new(&editor.input).xsmall().appearance(false))
                     .into_any_element();
             }
@@ -346,6 +360,10 @@ impl TableDelegate for GridDelegate {
             .flex()
             .items_center()
             .overflow_hidden()
+            // Vertical divider between columns (the cell's left edge).
+            .pl(CELL_PAD)
+            .border_l_1()
+            .border_color(theme.table_row_border)
             .whitespace_nowrap()
             .when(pending, |this| this.bg(theme.warning.opacity(0.18)))
             .when(deleted, |this| this.bg(theme.danger.opacity(0.12)).line_through());
