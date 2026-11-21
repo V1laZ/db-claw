@@ -80,8 +80,8 @@ impl ConnectionForm {
         let port = input(port_placeholder(kind), p.port.map(|p| p.to_string()).unwrap_or_default(), window, cx);
         let database = input(
             match kind {
-                DbKind::Postgres => "same as user".into(),
-                DbKind::Mongo => "optional".into(),
+                DbKind::Postgres => "optional · defaults to the user name".into(),
+                DbKind::Mongo => "optional · opened first in the sidebar".into(),
             },
             p.database.clone(),
             window,
@@ -197,8 +197,8 @@ impl ConnectionForm {
         self.database.update(cx, |s, cx| {
             s.set_placeholder(
                 match kind {
-                    DbKind::Postgres => "same as user",
-                    DbKind::Mongo => "optional",
+                    DbKind::Postgres => "optional · defaults to the user name",
+                    DbKind::Mongo => "optional · opened first in the sidebar",
                 },
                 window,
                 cx,
