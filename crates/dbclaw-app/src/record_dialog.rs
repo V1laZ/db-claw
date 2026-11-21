@@ -121,17 +121,13 @@ impl Render for RowForm {
 }
 
 pub fn open_row_form(
+    title: SharedString,
     columns: Vec<ColumnMeta>,
     template: Option<Vec<Cell>>,
     view: WeakEntity<TableView>,
     window: &mut Window,
     cx: &mut App,
 ) {
-    let title: SharedString = view
-        .upgrade()
-        .map(|v| format!("Insert into {}", v.read(cx).title()))
-        .unwrap_or_default()
-        .into();
     let form = cx.new(|cx| RowForm::new(columns, template, window, cx));
     let first = std::cell::Cell::new(true);
     window.open_dialog(cx, move |dialog, window, cx| {

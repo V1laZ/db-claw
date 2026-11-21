@@ -75,13 +75,16 @@ impl Workspace {
                 }
             }),
         ];
+        // Focus the workspace so app shortcuts (⌘N, ⌘T, …) work right away.
+        let focus = cx.focus_handle();
+        focus.focus(window, cx);
         Self {
             state,
             navigator,
             tabs: Vec::new(),
             active: 0,
             sidebar: true,
-            focus: cx.focus_handle(),
+            focus,
             _subs: subs,
         }
     }
@@ -188,7 +191,7 @@ impl Workspace {
                     (t.conn_id.clone(), t.object.clone())
                 };
                 self.navigator.update(cx, |n, cx| n.reveal(&conn_id, &object, cx));
-                let h = t.read(cx).focus_handle().clone();
+                let h = t.read(cx).grid_focus(cx);
                 h.focus(window, cx);
             }
             Tab::Console(c) => {

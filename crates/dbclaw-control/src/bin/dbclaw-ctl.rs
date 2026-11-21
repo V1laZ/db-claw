@@ -59,6 +59,8 @@ fn parse_kv(args: &[String]) -> Result<Value> {
 
 fn screenshot(client: &mut Client, path: Option<PathBuf>, max_width: Option<u32>, ext: &str) -> Result<PathBuf> {
     let state = client.call("state", json!({}))?;
+    // Give the app a frame to draw after the refresh triggered by `state`.
+    std::thread::sleep(std::time::Duration::from_millis(60));
     let number = state["window"]["number"]
         .as_u64()
         .ok_or_else(|| anyhow!("the app did not report a window number"))?;

@@ -85,11 +85,14 @@ dbclaw-ctl edit_cell row=0 column=name value='"Eva"'
 dbclaw-ctl save
 dbclaw-ctl run connection=mongo text='db.orders.aggregate([{$group: {_id: "$status", n: {$sum: 1}}}])'
 dbclaw-ctl screenshot /tmp/dbclaw.png                    # works even when the window is covered
-dbclaw-ctl help                                          # all 29 methods; `help <method>` for params
+dbclaw-ctl help                                          # all methods; `help <method>` for params
 ```
 
 Every method waits for its work to finish (page loaded, save committed, query done) and
 returns JSON. Connections can be addressed by id, name, or any unique part of the name.
+Low-level `key`, `type`, `action` and `click` methods reach anything the semantic methods don't.
+In control mode, animations are off so the UI settles immediately (and renders even when the
+window is covered).
 
 **MCP:** `dbclaw-ctl mcp` serves the same methods as MCP tools over stdio, and `screenshot`
 comes back as an image. This repository's `.mcp.json` registers it for Claude Code. For other

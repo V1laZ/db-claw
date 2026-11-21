@@ -58,6 +58,7 @@ pub struct TableView {
     loading: bool,
     saving: bool,
     save_seq: u64,
+    pending_placeholder: Option<SharedString>,
     last_save: Option<(u64, Result<String, String>)>,
     error: Option<SharedString>,
     elapsed: Option<Duration>,
@@ -138,6 +139,7 @@ impl TableView {
             loading: true,
             saving: false,
             save_seq: 0,
+            pending_placeholder: None,
             last_save: None,
             error: None,
             elapsed: None,
@@ -161,8 +163,10 @@ impl TableView {
         self.conn.kind()
     }
 
-    pub fn focus_handle(&self) -> &FocusHandle {
-        &self.focus
+    /// Focus target when the tab is activated: the grid itself, so arrow
+    /// keys and Enter work right away.
+    pub fn grid_focus(&self, cx: &App) -> FocusHandle {
+        self.table.focus_handle(cx)
     }
 
     fn page_request(&self) -> PageRequest {
@@ -210,6 +214,8 @@ impl TableView {
                         if need_columns {
                             this.columns = columns;
                             this.columns_loaded = true;
+                            let source = if this.columns.is_empty() { &page.columns } else { &this.columns };
+                            this.pending_placeholder = Some(filter_placeholder(source));
                         }
                         let offset = (this.page * this.page_size) as usize;
                         let sort = this.sort.first().and_then(|s| {
@@ -739,7 +745,8 @@ impl TableView {
         match self.conn.kind() {
             DbKind::Postgres => {
                 let template: Option<Vec<Cell>> = template_row.and_then(|r| d.set.rows.get(r).cloned());
-                record_dialog::open_row_form(self.columns.clone(), template, view, window, cx);
+                let title: SharedString = format!("Insert into {}", self.title()).into();
+                record_dialog::open_row_form(title, self.columns.clone(), template, view, window, cx);
             }
             DbKind::Mongo => {
                 let mut doc = template_row
@@ -888,10 +895,14 @@ impl TableView {
         }
         if let Some((r, c)) = self.selected_cell(cx) {
             self.start_edit(r, c, window, cx);
-        } else if let Some(r) = self.selected_row(cx)
-            && self.conn.kind() == DbKind::Mongo {
+        } else if let Some(r) = self.selected_row(cx) {
+            if self.conn.kind() == DbKind::Mongo {
                 self.edit_document(r, window, cx);
+            } else if !self.table.read(cx).delegate().set.columns.is_empty() {
+                self.table.update(cx, |t, cx| t.set_selected_cell(r, 1, cx));
+                self.start_edit(r, 0, window, cx);
             }
+        }
     }
 
     fn on_set_null(&mut self, _: &SetNull, window: &mut Window, cx: &mut Context<Self>) {
@@ -908,6 +919,17 @@ impl TableView {
         self.cancel_edit(window, cx);
     }
 
+    /// Left/Right on a selected row moves into its first cell (the table
+    /// would otherwise switch to column selection).
+    fn row_to_cell(&mut self, cx: &mut Context<Self>) {
+        if let TableSelection::Row(r) = self.table.read(cx).selection()
+            && !self.table.read(cx).delegate().set.columns.is_empty()
+        {
+            self.table.update(cx, |t, cx| t.set_selected_cell(r, 1, cx));
+            cx.stop_propagation();
+        }
+    }
+
     fn on_next_page(&mut self, _: &NextPage, _: &mut Window, cx: &mut Context<Self>) {
         if self.last_page().is_none_or(|l| self.page < l) {
             self.go_to_page(self.page + 1, cx);
@@ -918,6 +940,30 @@ impl TableView {
         if self.page > 0 {
             self.go_to_page(self.page - 1, cx);
         }
+    }
+}
+
+/// An example filter built from the table's own columns.
+fn filter_placeholder(columns: &[ColumnMeta]) -> SharedString {
+    use dbclaw_core::model::ValueKind;
+    let ident = |c: &&ColumnMeta| c.name.chars().all(|ch| ch.is_alphanumeric() || ch == '_');
+    let number = columns.iter().filter(ident).find(|c| c.kind == ValueKind::Number && !c.is_pk);
+    let text = columns.iter().filter(ident).find(|c| c.kind == ValueKind::Text && !c.is_pk);
+    let mut parts = Vec::new();
+    if let Some(c) = number {
+        parts.push(format!("{} > 100", c.name));
+    }
+    if let Some(c) = text {
+        parts.push(format!("{} ~ \"abc\"", c.name));
+    }
+    if parts.is_empty()
+        && let Some(c) = columns.iter().find(ident) {
+            parts.push(format!("{} is not null", c.name));
+        }
+    if parts.is_empty() {
+        "Filter…  (? for syntax)".into()
+    } else {
+        format!("Filter, e.g. {}   (? for syntax)", parts.join(" and ")).into()
     }
 }
 
@@ -945,6 +991,9 @@ impl Focusable for TableView {
 
 impl Render for TableView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(hint) = self.pending_placeholder.take() {
+            self.filter_input.update(cx, |s, cx| s.set_placeholder(hint, window, cx));
+        }
         let theme = cx.theme().clone();
         let d = self.table.read(cx).delegate();
         let pending = d.change_count();
@@ -1176,6 +1225,8 @@ impl Render for TableView {
             .key_context("TableView")
             .track_focus(&self.focus)
             .size_full()
+            .capture_action(cx.listener(|this, _: &gpui_kit::base::actions::SelectNextColumn, _, cx| this.row_to_cell(cx)))
+            .capture_action(cx.listener(|this, _: &gpui_kit::base::actions::SelectPrevColumn, _, cx| this.row_to_cell(cx)))
             .on_action(cx.listener(Self::on_save))
             .on_action(cx.listener(Self::on_refresh))
             .on_action(cx.listener(Self::on_focus_filter))

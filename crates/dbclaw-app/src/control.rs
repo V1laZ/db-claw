@@ -31,6 +31,9 @@ pub fn enabled() -> bool {
 
 /// Start listening and serve requests against `workspace` in `window`.
 pub fn start(workspace: Entity<Workspace>, window: AnyWindowHandle, cx: &mut App) {
+    // Animations wait on display-link frames, which macOS pauses for covered
+    // windows; agents also want deterministic, instantly settled UI.
+    cx.set_reduce_motion(true);
     let (tx, mut rx) = mpsc::unbounded::<Job>();
     if let Err(e) = listen(tx) {
         eprintln!("db-claw: control server not started: {e:#}");
@@ -47,6 +50,8 @@ pub fn start(workspace: Entity<Workspace>, window: AnyWindowHandle, cx: &mut App
                             Ok(v) => Response::ok(id, v),
                             Err(e) => Response::err(id, format!("{e:#}")),
                         };
+                        // Redraw even if the window is covered, so screenshots are current.
+                        let _ = cx.update(|window, _| window.refresh());
                         let _ = reply.send(resp);
                     })
                     .detach();
@@ -292,7 +297,8 @@ impl Ctx {
         }
     }
 
-    async fn handle(&self, method: &str, params: Value, cx: &mut AsyncWindowContext) -> Result<Value> {
+    async fn handle(&self, method: &str, mut params: Value, cx: &mut AsyncWindowContext) -> Result<Value> {
+        coerce_params(method, &mut params);
         match method {
             "state" => self.state(cx),
             "add_connection" => {
@@ -528,6 +534,34 @@ impl Ctx {
                 })??;
                 Ok(json!({ "ok": true }))
             }
+            "click" => {
+                let x = params.get("x").and_then(Value::as_f64).ok_or_else(|| anyhow!("missing `x`"))?;
+                let y = params.get("y").and_then(Value::as_f64).ok_or_else(|| anyhow!("missing `y`"))?;
+                let button = match p_str(&params, "button") {
+                    Some("right") => MouseButton::Right,
+                    Some("middle") => MouseButton::Middle,
+                    _ => MouseButton::Left,
+                };
+                let count = p_u64(&params, "count").unwrap_or(1).clamp(1, 3) as usize;
+                let position = point(px(x as f32), px(y as f32));
+                cx.update(|window, cx| {
+                    window.dispatch_event(
+                        PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: None, modifiers: Modifiers::default() }),
+                        cx,
+                    );
+                    for n in 1..=count {
+                        window.dispatch_event(
+                            PlatformInput::MouseDown(MouseDownEvent { button, position, modifiers: Modifiers::default(), click_count: n, first_mouse: false }),
+                            cx,
+                        );
+                        window.dispatch_event(
+                            PlatformInput::MouseUp(MouseUpEvent { button, position, modifiers: Modifiers::default(), click_count: n }),
+                            cx,
+                        );
+                    }
+                })?;
+                Ok(json!({ "ok": true }))
+            }
             "close_dialog" => {
                 cx.update(|window, cx| {
                     window.close_dialog(cx);
@@ -542,6 +576,7 @@ impl Ctx {
     fn state(&self, cx: &mut AsyncWindowContext) -> Result<Value> {
         cx.update(|window, cx| {
             let number = window_number(window);
+            let size = window.viewport_size();
             let dialog = window.has_active_dialog(cx);
             let ws = self.workspace.read(cx);
             let state = ws.state().read(cx);
@@ -594,7 +629,7 @@ impl Ctx {
                 .collect();
             json!({
                 "app": { "name": "DB Claw", "version": env!("CARGO_PKG_VERSION"), "pid": std::process::id() },
-                "window": { "number": number },
+                "window": { "number": number, "width": f32::from(size.width), "height": f32::from(size.height) },
                 "dialog_open": dialog,
                 "connections": connections,
                 "tabs": tabs,
@@ -720,4 +755,20 @@ fn object_json(o: &ObjectInfo) -> Value {
         "kind": format!("{:?}", o.object.kind),
         "estimated_rows": o.estimated_rows,
     })
+}
+
+/// CLI users pass `key=value`, where numbers parse as JSON numbers; turn
+/// scalars back into strings for parameters documented as strings.
+fn coerce_params(method: &str, params: &mut Value) {
+    let Some(spec) = dbclaw_control::find_method(method) else { return };
+    let Some(obj) = params.as_object_mut() else { return };
+    for (name, ty, _, _) in spec.params {
+        if !ty.starts_with("string") {
+            continue;
+        }
+        if let Some(v) = obj.get_mut(*name)
+            && (v.is_number() || v.is_boolean()) {
+                *v = Value::String(v.to_string());
+            }
+    }
 }

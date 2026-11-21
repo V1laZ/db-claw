@@ -312,6 +312,16 @@ pub static METHODS: &[MethodSpec] = &[
         params: &[("name", "string", "Action name", true)],
     },
     MethodSpec {
+        name: "click",
+        description: "Low-level: click at window coordinates in points (state.window.width/height give the size; a screenshot may be scaled differently). Use count=2 for double-click.",
+        params: &[
+            ("x", "number", "X in points from the window's left edge", true),
+            ("y", "number", "Y in points from the top of the window content", true),
+            ("button", "string", "left (default), right or middle", false),
+            ("count", "integer", "Click count (2 = double-click)", false),
+        ],
+    },
+    MethodSpec {
         name: "close_dialog",
         description: "Close the open dialog (if any) and dismiss notifications.",
         params: &[],
