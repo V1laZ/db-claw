@@ -326,7 +326,7 @@ impl MongoSession {
             MongoCommand::InsertOne { collection, document } => {
                 let r = coll(&collection).insert_one(document).await?;
                 status_set(
-                    format!("inserted 1 document"),
+                    "inserted 1 document".to_string(),
                     vec![doc! { "insertedId": r.inserted_id }],
                 )
             }
@@ -471,7 +471,7 @@ fn status_set(status: String, docs: Vec<Document>) -> ResultSet {
     set
 }
 
-pub(crate) fn bson_kind(v: &Bson) -> ValueKind {
+pub fn bson_kind(v: &Bson) -> ValueKind {
     match v {
         Bson::Double(_) | Bson::Int32(_) | Bson::Int64(_) | Bson::Decimal128(_) => {
             ValueKind::Number

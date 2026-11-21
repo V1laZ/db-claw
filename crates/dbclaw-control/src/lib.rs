@@ -1,0 +1,379 @@
+//! Automation protocol for a running DB Claw app.
+//!
+//! The app (started with `DBCLAW_CONTROL=1` or `--control`) listens on a
+//! Unix socket readable only by the current user. Messages are JSON lines:
+//!
+//! ```text
+//! → {"id": 1, "method": "open_table", "params": {"connection": "Shop", "name": "customers"}}
+//! ← {"id": 1, "result": {...}}            or   {"id": 1, "error": "..."}
+//! ```
+//!
+//! [`METHODS`] documents every method; the `dbclaw-ctl` binary exposes them
+//! as a CLI and as MCP tools.
+
+use std::io::{BufRead as _, BufReader, Write as _};
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use anyhow::{Context as _, Result, anyhow, bail};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Request {
+    pub id: u64,
+    pub method: String,
+    #[serde(default)]
+    pub params: Value,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Response {
+    pub id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+impl Response {
+    pub fn ok(id: u64, result: Value) -> Self {
+        Self { id, result: Some(result), error: None }
+    }
+
+    pub fn err(id: u64, error: impl Into<String>) -> Self {
+        Self { id, result: None, error: Some(error.into()) }
+    }
+}
+
+/// Default socket: `$DBCLAW_CONTROL_SOCKET`, else `<config dir>/DB Claw/control.sock`
+/// (honouring `$DBCLAW_CONFIG_DIR`), or `/tmp/dbclaw-$USER.sock` when that path
+/// is too long for a Unix socket.
+pub fn default_socket_path() -> PathBuf {
+    if let Ok(p) = std::env::var("DBCLAW_CONTROL_SOCKET") {
+        return PathBuf::from(p);
+    }
+    let dir = match std::env::var("DBCLAW_CONFIG_DIR") {
+        Ok(d) => PathBuf::from(d),
+        Err(_) => dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("DB Claw"),
+    };
+    let path = dir.join("control.sock");
+    // Unix socket paths are limited to ~104 bytes; fall back to /tmp.
+    if path.as_os_str().len() >= 100 {
+        let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
+        return PathBuf::from(format!("/tmp/dbclaw-{user}.sock"));
+    }
+    path
+}
+
+/// Blocking client for the control socket.
+pub struct Client {
+    reader: BufReader<UnixStream>,
+    writer: UnixStream,
+    next_id: u64,
+}
+
+impl Client {
+    pub fn connect(path: &std::path::Path) -> Result<Client> {
+        let stream = UnixStream::connect(path).with_context(|| {
+            format!(
+                "cannot reach DB Claw at {} — start the app with DBCLAW_CONTROL=1 (or --control)",
+                path.display()
+            )
+        })?;
+        stream.set_read_timeout(Some(Duration::from_secs(600)))?;
+        let writer = stream.try_clone()?;
+        Ok(Client { reader: BufReader::new(stream), writer, next_id: 1 })
+    }
+
+    pub fn call(&mut self, method: &str, params: Value) -> Result<Value> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let req = Request { id, method: method.to_string(), params };
+        let mut line = serde_json::to_string(&req)?;
+        line.push('\n');
+        self.writer.write_all(line.as_bytes())?;
+        let mut buf = String::new();
+        loop {
+            buf.clear();
+            if self.reader.read_line(&mut buf)? == 0 {
+                bail!("DB Claw closed the connection");
+            }
+            let resp: Response = serde_json::from_str(&buf).context("invalid response")?;
+            if resp.id != id {
+                continue;
+            }
+            return match (resp.result, resp.error) {
+                (_, Some(e)) => Err(anyhow!(e)),
+                (Some(r), None) => Ok(r),
+                (None, None) => Ok(Value::Null),
+            };
+        }
+    }
+}
+
+/// Description of one method: used for CLI help and MCP tool definitions.
+pub struct MethodSpec {
+    pub name: &'static str,
+    pub description: &'static str,
+    /// JSON Schema properties: (name, type, description, required).
+    pub params: &'static [(&'static str, &'static str, &'static str, bool)],
+}
+
+impl MethodSpec {
+    pub fn input_schema(&self) -> Value {
+        let mut props = serde_json::Map::new();
+        let mut required = Vec::new();
+        for (name, ty, desc, req) in self.params {
+            let schema = match *ty {
+                "any" => json!({ "description": desc }),
+                "string|null" => json!({ "type": ["string", "null"], "description": desc }),
+                "object" => json!({ "type": "object", "description": desc, "additionalProperties": true }),
+                t => json!({ "type": t, "description": desc }),
+            };
+            props.insert(name.to_string(), schema);
+            if *req {
+                required.push(*name);
+            }
+        }
+        json!({ "type": "object", "properties": props, "required": required })
+    }
+}
+
+const TAB: (&str, &str, &str, bool) =
+    ("tab", "integer", "Tab id (from `state`); defaults to the active tab", false);
+const CONN: (&str, &str, &str, bool) =
+    ("connection", "string", "Connection id or name (case-insensitive)", true);
+
+pub static METHODS: &[MethodSpec] = &[
+    MethodSpec {
+        name: "state",
+        description: "Snapshot of the whole app: saved connections and their status, open tabs (with filter, paging, row counts, pending changes, errors), the active tab and whether a dialog is open. Start here.",
+        params: &[],
+    },
+    MethodSpec {
+        name: "add_connection",
+        description: "Save a new connection. The URL may contain the password; it is stored separately. Returns the connection.",
+        params: &[
+            ("url", "string", "postgres://user@host:5432/db or mongodb://user@host:27017/db?authSource=admin", true),
+            ("name", "string", "Display name (derived from the URL if omitted)", false),
+            ("password", "string", "Password (optional)", false),
+            ("read_only", "boolean", "Disable editing in the data grid", false),
+            ("connect", "boolean", "Connect right away (default true)", false),
+        ],
+    },
+    MethodSpec {
+        name: "remove_connection",
+        description: "Delete a saved connection (the database is not touched). Closes its tabs.",
+        params: &[CONN],
+    },
+    MethodSpec {
+        name: "connect",
+        description: "Connect to a saved connection and wait until it is connected or failed.",
+        params: &[CONN],
+    },
+    MethodSpec {
+        name: "disconnect",
+        description: "Disconnect (closes the connection's tabs).",
+        params: &[CONN],
+    },
+    MethodSpec {
+        name: "list_databases",
+        description: "List databases on a connected server.",
+        params: &[CONN],
+    },
+    MethodSpec {
+        name: "list_objects",
+        description: "List tables/views (Postgres, with schema) or collections (Mongo) in a database.",
+        params: &[CONN, ("database", "string", "Database name (defaults to the one in the URL)", false)],
+    },
+    MethodSpec {
+        name: "open_table",
+        description: "Open (or activate) the data tab of a table/view/collection and wait for the first page. Returns the tab with its first rows.",
+        params: &[
+            CONN,
+            ("name", "string", "Table / collection name; `schema.table` also works", true),
+            ("database", "string", "Database (defaults to the one in the URL)", false),
+            ("schema", "string", "Postgres schema (default: public, or the only match)", false),
+            ("rows", "integer", "How many rows to include in the reply (default 20)", false),
+        ],
+    },
+    MethodSpec {
+        name: "rows",
+        description: "Read rows of a data or console tab as shown in the grid (pending edits applied, deleted rows flagged). Cells are strings, or null for NULL/missing.",
+        params: &[TAB, ("offset", "integer", "First row on the current page (default 0)", false), ("limit", "integer", "Max rows (default 50)", false)],
+    },
+    MethodSpec {
+        name: "filter",
+        description: "Set the filter of a data tab using the universal filter language, e.g. `age > 30 and name ~ \"jo\" and tags in [\"a\"]`, and wait for results. Empty text clears it. Returns syntax errors with position.",
+        params: &[TAB, ("text", "string", "Filter expression", true), ("rows", "integer", "Rows to include in the reply (default 20)", false)],
+    },
+    MethodSpec {
+        name: "sort",
+        description: "Sort a data tab by a column (server-side) and wait. Omit `column` to clear sorting.",
+        params: &[TAB, ("column", "string", "Column name", false), ("dir", "string", "asc (default) or desc", false)],
+    },
+    MethodSpec {
+        name: "page",
+        description: "Go to a page and/or change the page size of a data tab and wait.",
+        params: &[TAB, ("page", "integer", "0-based page index", false), ("page_size", "integer", "Rows per page (e.g. 100, 500, 1000, 5000)", false)],
+    },
+    MethodSpec {
+        name: "refresh",
+        description: "Reload the current page and row count of a data tab and wait.",
+        params: &[TAB],
+    },
+    MethodSpec {
+        name: "edit_cell",
+        description: "Stage a cell edit (not saved until `save`). Postgres values are text in Postgres input format; Mongo values use relaxed JSON for non-strings (e.g. 42, true, ISODate(\"…\")). Use null for NULL.",
+        params: &[
+            TAB,
+            ("row", "integer", "Row index on the current page (0-based)", true),
+            ("column", "string", "Column / field name", true),
+            ("value", "string|null", "New value, or null", true),
+        ],
+    },
+    MethodSpec {
+        name: "delete_row",
+        description: "Stage deletion of a row (toggle with undo=true).",
+        params: &[TAB, ("row", "integer", "Row index on the current page", true), ("undo", "boolean", "Unmark instead", false)],
+    },
+    MethodSpec {
+        name: "save",
+        description: "Save all staged edits/deletions of a data tab (one transaction on Postgres) and wait. Returns the summary or the error.",
+        params: &[TAB],
+    },
+    MethodSpec {
+        name: "discard",
+        description: "Discard staged changes of a data tab.",
+        params: &[TAB],
+    },
+    MethodSpec {
+        name: "insert",
+        description: "Insert immediately. Postgres: `values` maps column → text value (null = NULL; omitted columns use their default). Mongo: `document` in relaxed JSON / mongosh syntax.",
+        params: &[TAB, ("values", "object", "Postgres column values", false), ("document", "string", "Mongo document", false)],
+    },
+    MethodSpec {
+        name: "replace_document",
+        description: "Mongo: replace the document at `row` with `document` (relaxed JSON; _id is kept) and wait.",
+        params: &[TAB, ("row", "integer", "Row index on the current page", true), ("document", "string", "New document", true)],
+    },
+    MethodSpec {
+        name: "open_console",
+        description: "Open a query console tab (SQL for Postgres, mongosh syntax for Mongo). Returns the tab.",
+        params: &[
+            CONN,
+            ("database", "string", "Database (defaults to the one in the URL)", false),
+            ("collection", "string", "Mongo: default collection for bare filters like {a: 1}", false),
+        ],
+    },
+    MethodSpec {
+        name: "run",
+        description: "Run a query in a console tab and wait for the result. With `text`, the editor content is replaced and the whole text runs. Without it, runs the statement at the cursor (or everything with all=true). Returns result sets (columns + first rows), notices and errors.",
+        params: &[
+            TAB,
+            ("text", "string", "Query text", false),
+            ("all", "boolean", "Run the whole editor content", false),
+            ("rows", "integer", "Rows per result set in the reply (default 50)", false),
+            ("connection", "string", "If no console tab is given/active: open one on this connection", false),
+            ("database", "string", "Database for a newly opened console", false),
+        ],
+    },
+    MethodSpec {
+        name: "cancel",
+        description: "Cancel the running query of a console tab.",
+        params: &[TAB],
+    },
+    MethodSpec {
+        name: "activate_tab",
+        description: "Switch to a tab.",
+        params: &[("tab", "integer", "Tab id", true)],
+    },
+    MethodSpec {
+        name: "close_tab",
+        description: "Close a tab. Tabs with unsaved changes are kept unless force=true (changes are discarded).",
+        params: &[TAB, ("force", "boolean", "Discard unsaved changes", false)],
+    },
+    MethodSpec {
+        name: "key",
+        description: "Low-level: send keystrokes to the focused element, space separated, e.g. \"cmd-t\" or \"down down enter\".",
+        params: &[("keys", "string", "Keystrokes in gpui syntax (cmd-, shift-, alt-, ctrl- prefixes)", true)],
+    },
+    MethodSpec {
+        name: "type",
+        description: "Low-level: type text into the focused input.",
+        params: &[("text", "string", "Text to type", true)],
+    },
+    MethodSpec {
+        name: "action",
+        description: "Low-level: dispatch a named action on the focused element, e.g. \"dbclaw::Refresh\", \"dbclaw::NewConsole\".",
+        params: &[("name", "string", "Action name", true)],
+    },
+    MethodSpec {
+        name: "close_dialog",
+        description: "Close the open dialog (if any) and dismiss notifications.",
+        params: &[],
+    },
+];
+
+/// Handled by `dbclaw-ctl` itself (not the app): capture the app window.
+pub static SCREENSHOT: MethodSpec = MethodSpec {
+    name: "screenshot",
+    description: "Capture a PNG of the DB Claw window (works even when it is covered). Requires screen-recording permission for the calling terminal.",
+    params: &[
+        ("path", "string", "Where to save the PNG (CLI only; MCP returns the image)", false),
+        ("max_width", "integer", "Downscale to at most this width in pixels (default 1600)", false),
+    ],
+};
+
+pub fn find_method(name: &str) -> Option<&'static MethodSpec> {
+    METHODS.iter().chain(std::iter::once(&SCREENSHOT)).find(|m| m.name == name)
+}
+
+/// Capture the window with the given macOS window number to `path`.
+pub fn capture_window(window_number: u64, path: &std::path::Path, max_width: Option<u32>) -> Result<()> {
+    let jpeg = path.extension().is_some_and(|e| e == "jpg" || e == "jpeg");
+    let status = std::process::Command::new("/usr/sbin/screencapture")
+        .args(["-x", "-o", "-t", if jpeg { "jpg" } else { "png" }, "-l", &window_number.to_string()])
+        .arg(path)
+        .status()
+        .context("running screencapture")?;
+    if !status.success() || !path.exists() {
+        bail!("screencapture failed — grant Screen Recording permission to your terminal");
+    }
+    let mut sips_args: Vec<String> = Vec::new();
+    if let Some(w) = max_width {
+        sips_args.extend(["-Z".into(), w.to_string()]);
+    }
+    if jpeg {
+        sips_args.extend(["-s", "format", "jpeg", "-s", "formatOptions", "low"].map(String::from));
+    }
+    if !sips_args.is_empty() {
+        let _ = std::process::Command::new("/usr/bin/sips")
+            .args(&sips_args)
+            .arg(path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn schemas_are_objects() {
+        for m in METHODS {
+            let s = m.input_schema();
+            assert_eq!(s["type"], "object", "{}", m.name);
+        }
+        assert!(find_method("screenshot").is_some());
+        assert!(find_method("nope").is_none());
+        let names: std::collections::HashSet<_> = METHODS.iter().map(|m| m.name).collect();
+        assert_eq!(names.len(), METHODS.len(), "duplicate method names");
+    }
+}

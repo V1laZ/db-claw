@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "dbclaw": {
+      "command": "cargo",
+      "args": ["run", "-q", "-p", "dbclaw-control", "--bin", "dbclaw-ctl", "--", "mcp"]
+    }
+  }
+}

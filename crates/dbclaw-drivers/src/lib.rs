@@ -17,7 +17,7 @@ use dbclaw_core::model::{
     QueryOutput, ResultSet, RowChange,
 };
 
-pub use mongo::docs_to_result_set;
+pub use mongo::{bson_kind, docs_to_result_set};
 pub use pg::PgExecError;
 
 /// The shared I/O runtime.

@@ -1,0 +1,17 @@
+[package]
+name = "dbclaw-control"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Automation protocol, CLI and MCP server for controlling a running DB Claw app"
+
+[[bin]]
+name = "dbclaw-ctl"
+path = "src/bin/dbclaw-ctl.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64 = "0.22"
+dirs = "6"

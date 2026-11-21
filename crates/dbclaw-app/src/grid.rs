@@ -13,6 +13,7 @@ use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableState};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::util::single_line;
@@ -154,11 +155,10 @@ fn compare_cells(a: Option<&Cell>, b: Option<&Cell>, numeric: bool) -> std::cmp:
         (None, Some(_)) => Ordering::Less,
         (Some(_), None) => Ordering::Greater,
         (Some(x), Some(y)) => {
-            if numeric {
-                if let (Ok(fx), Ok(fy)) = (x.parse::<f64>(), y.parse::<f64>()) {
+            if numeric
+                && let (Ok(fx), Ok(fy)) = (x.parse::<f64>(), y.parse::<f64>()) {
                     return fx.partial_cmp(&fy).unwrap_or(Ordering::Equal);
                 }
-            }
             x.cmp(y)
         }
     }
@@ -171,7 +171,11 @@ fn compute_widths(set: &ResultSet) -> Vec<Pixels> {
         .iter()
         .enumerate()
         .map(|(i, c)| {
-            let header = c.name.chars().count().max(c.type_name.chars().count().min(18)) + 3;
+            // Header shows: [key icon] name  type  [sort icon]
+            let header = c.name.chars().count()
+                + c.type_name.chars().count().min(16)
+                + if c.is_pk { 3 } else { 0 }
+                + 5;
             let content = set
                 .rows
                 .iter()
@@ -214,11 +218,10 @@ impl TableDelegate for GridDelegate {
             .width(self.widths.get(data_col).copied().unwrap_or(px(120.)))
             .movable(false)
             .sortable();
-        if let Some((c, sort)) = self.sort {
-            if c == data_col {
+        if let Some((c, sort)) = self.sort
+            && c == data_col {
                 column = column.sort(sort);
             }
-        }
         if meta.kind.is_right_aligned() {
             column = column.text_right();
         }
@@ -317,14 +320,13 @@ impl TableDelegate for GridDelegate {
                 .into_any_element();
         }
         let data_col = col_ix - 1;
-        if let Some(editor) = &self.editor {
-            if editor.row == row_ix && editor.col == data_col {
+        if let Some(editor) = &self.editor
+            && editor.row == row_ix && editor.col == data_col {
                 return div()
                     .w_full()
                     .child(Input::new(&editor.input).xsmall().appearance(false))
                     .into_any_element();
             }
-        }
         let pending = self.edits.contains_key(&(row_ix, data_col));
         let cell = self.cell(row_ix, data_col).cloned().unwrap_or(Cell::Missing);
         let base = div()

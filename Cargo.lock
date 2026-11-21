@@ -1283,15 +1283,29 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bson",
+ "dbclaw-control",
  "dbclaw-core",
  "dbclaw-drivers",
  "dirs 6.0.0",
  "futures",
  "gpui-kit",
+ "objc2-app-kit 0.3.2",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "dbclaw-control"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "dirs 6.0.0",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

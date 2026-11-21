@@ -362,8 +362,8 @@ impl PgSession {
         // (Parse/Describe only, nothing is executed) so the grid can align
         // numbers and label columns with their types.
         let mut described: Option<Vec<(String, String)>> = None;
-        if statements.len() == 1 {
-            if let Ok(stmt) = client.prepare(&text[statements[0].clone()]).await {
+        if statements.len() == 1
+            && let Ok(stmt) = client.prepare(&text[statements[0].clone()]).await {
                 described = Some(
                     stmt.columns()
                         .iter()
@@ -371,7 +371,6 @@ impl PgSession {
                         .collect(),
                 );
             }
-        }
 
         let stream = client
             .simple_query_raw(text)
@@ -529,11 +528,10 @@ fn parse_config(config: &ConnectionConfig) -> Result<(tokio_postgres::Config, bo
     if cfg.get_connect_timeout().is_none() {
         cfg.connect_timeout(Duration::from_secs(10));
     }
-    if cfg.get_user().is_none() {
-        if let Ok(user) = std::env::var("USER") {
+    if cfg.get_user().is_none()
+        && let Ok(user) = std::env::var("USER") {
             cfg.user(&user);
         }
-    }
     Ok((cfg, verify))
 }
 
