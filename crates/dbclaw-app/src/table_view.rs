@@ -136,11 +136,9 @@ impl TableView {
                 .col_movable(false)
                 .sortable(true)
         });
-        let placeholder = match conn.kind() {
-            DbKind::Postgres => "Filter: status = \"paid\" and total > 100 and note is not null",
-            DbKind::Mongo => "Filter: age >= 30 and address.city = \"Prague\" and tags in [\"beta\"]",
-        };
-        let filter_input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
+        // No hint until the columns are known: the example is built from them
+        // (a generic one would flash and then be replaced).
+        let filter_input = cx.new(|cx| InputState::new(window, cx));
         let subs = vec![
             cx.subscribe_in(&table, window, Self::on_table_event),
             cx.subscribe_in(&filter_input, window, |this, _, ev: &InputEvent, window, cx| match ev {
@@ -292,6 +290,9 @@ impl TableView {
                         }
                     }
                     Err(e) => {
+                        if !this.columns_loaded {
+                            this.pending_placeholder = Some("Filter…".into());
+                        }
                         this.error = Some(dbclaw_drivers::error_message(&e).into());
                         this.table.update(cx, |t, cx| {
                             t.delegate_mut().loading = false;
