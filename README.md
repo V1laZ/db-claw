@@ -43,7 +43,7 @@ MongoDB Atlas-style `mongodb+srv://` hosts are supported.
 | Sidebar | Click a connection to connect, then a table / collection to open it. ⌘P searches tables. Right-click for consoles, refresh, edit, delete. |
 | Filter bar (⌘F) | Universal filter language, applied with Enter. `?` shows the cheat sheet. Right-click a cell → *Filter by this value*. |
 | Grid | Click a header to sort (server-side). Double-click / Enter / F2 edits a cell, ⌘⇧N sets NULL, ⌘⌫ marks a row for deletion, ⌘C copies, ⌘[ / ⌘] pages. |
-| References | Postgres foreign-key columns show a link icon in the header and an ↗ arrow in each cell. Click it to open the referenced row. Right-click a row → *Referenced by* opens the rows of other tables that point to it. **←/→** at the left of the tab bar (⌥← / ⌥→) go back and forward, restoring each tab's filter and page. |
+| References | Postgres foreign-key columns show a link icon in the header and an ↗ arrow in each cell. Click it to open the referenced row. Right-click a row → *Referenced by* opens the rows of other tables that point to it. **←/→** left of the filter (⌥← / ⌥→) go back and forward, like a browser, restoring each tab's filter and page. |
 | Saving | Edited cells turn yellow, deleted rows are struck through. ⌘S saves, *Discard* reverts. Postgres saves in one transaction and every UPDATE/DELETE must hit exactly one row (by primary key, or `ctid` for tables without one). |
 | Insert | ⌘I or **+**: a form for SQL tables (empty = column default / NULL), a relaxed-JSON editor for Mongo. Right-click → *Duplicate row…* pre-fills it. |
 | Console (⌘T) | ⌘↵ runs the statement at the cursor (or the selection); ⇧⌘↵ runs everything; ⌘. cancels. In a Mongo console a bare `{…}` filter runs `find` on the current collection. |

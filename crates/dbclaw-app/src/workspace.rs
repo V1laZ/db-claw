@@ -6,7 +6,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, Sizable as _, StyledExt as _, WindowExt as _, h_flex,
+    ActiveTheme as _, Icon, Sizable as _, StyledExt as _, WindowExt as _, h_flex,
     h_resizable,
     resizable_panel, v_flex,
 };
@@ -18,7 +18,7 @@ use crate::connection_dialog;
 use crate::console::ConsoleView;
 use crate::navigator::{NavEvent, Navigator};
 use crate::state::{AppEvent, AppState};
-use crate::table_view::{TableSource, TableView, TableViewEvent};
+use crate::table_view::{NavState, TableSource, TableView, TableViewEvent};
 
 /// Same table, ignoring the object kind (FK targets don't know if a table
 /// is partitioned the way the navigator does).
@@ -185,7 +185,14 @@ impl Workspace {
             TableViewEvent::OpenReference { conn_id, object, filter } => {
                 this.follow_reference(from, conn_id, object, filter.clone(), window, cx)
             }
+            TableViewEvent::GoBack => {
+                this.go_back(window, cx);
+            }
+            TableViewEvent::GoForward => {
+                this.go_forward(window, cx);
+            }
         });
+        view.update(cx, |v, cx| v.set_nav(self.nav_state(), cx));
         self._subs.push(sub);
         let ix = (self.active + 1).min(self.tabs.len());
         self.tabs.insert(ix, Tab::Table(view));
@@ -279,6 +286,9 @@ impl Workspace {
     pub fn remove_tab(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ix) = self.tabs.iter().position(|t| t.entity_id() == id) else { return };
         self.tabs.remove(ix);
+        self.back.retain(|l| l.tab != id);
+        self.forward.retain(|l| l.tab != id);
+        self.sync_nav(cx);
         if self.tabs.is_empty() {
             self.active = 0;
             self.focus.focus(window, cx);
@@ -328,7 +338,6 @@ impl Workspace {
             .border_b_1()
             .border_color(theme.border)
             .overflow_x_scroll()
-            .child(self.render_history_buttons(cx))
             .children(self.tabs.iter().enumerate().map(|(ix, tab)| {
                 let active = ix == self.active;
                 let (icon, title, dirty, running, sub) = match tab {
@@ -482,6 +491,7 @@ impl Workspace {
         }
         self.forward.clear();
         self.open_object(conn_id, object, Some(filter), window, cx);
+        self.sync_nav(cx);
     }
 
     /// Go to a location; false when its tab has been closed.
@@ -503,6 +513,7 @@ impl Workspace {
                 if let Some(current) = current {
                     self.forward.push(current);
                 }
+                self.sync_nav(cx);
                 cx.notify();
                 return true;
             }
@@ -517,6 +528,7 @@ impl Workspace {
                 if let Some(current) = current {
                     self.back.push(current);
                 }
+                self.sync_nav(cx);
                 cx.notify();
                 return true;
             }
@@ -524,43 +536,21 @@ impl Workspace {
         false
     }
 
-    fn render_history_buttons(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let back = self.back.last().map(|l| l.label.clone());
-        let forward = self.forward.last().map(|l| l.label.clone());
-        h_flex()
-            .px_1()
-            .gap_0p5()
-            .border_r_1()
-            .border_color(cx.theme().border)
-            .h_full()
-            .child(
-                Button::new("nav-back")
-                    .ghost()
-                    .xsmall()
-                    .icon(Icon::new(Lucide::ArrowLeft))
-                    .disabled(back.is_none())
-                    .tooltip(match &back {
-                        Some(l) => SharedString::from(format!("Back to {l} (⌥←)")),
-                        None => "Back (⌥←)".into(),
-                    })
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.go_back(window, cx);
-                    })),
-            )
-            .child(
-                Button::new("nav-forward")
-                    .ghost()
-                    .xsmall()
-                    .icon(Icon::new(Lucide::ArrowRight))
-                    .disabled(forward.is_none())
-                    .tooltip(match &forward {
-                        Some(l) => SharedString::from(format!("Forward to {l} (⌥→)")),
-                        None => "Forward (⌥→)".into(),
-                    })
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.go_forward(window, cx);
-                    })),
-            )
+    fn nav_state(&self) -> NavState {
+        NavState {
+            back: self.back.last().map(|l| l.label.clone()),
+            forward: self.forward.last().map(|l| l.label.clone()),
+        }
+    }
+
+    /// Push the current back/forward targets to every data tab's arrows.
+    fn sync_nav(&self, cx: &mut Context<Self>) {
+        let nav = self.nav_state();
+        for tab in &self.tabs {
+            if let Tab::Table(t) = tab {
+                t.update(cx, |t, cx| t.set_nav(nav.clone(), cx));
+            }
+        }
     }
 }
 
