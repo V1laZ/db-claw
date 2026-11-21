@@ -13,7 +13,7 @@ use dbclaw_core::mongo_shell;
 use dbclaw_drivers::Connection;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Editor, EditorState, InputEvent, InputState};
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::popover::Popover;
@@ -25,7 +25,12 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use std::cell::RefCell;
+
+use dbclaw_core::complete::FilterField;
+
 use crate::actions::*;
+use crate::completion::FilterCompletion;
 use crate::grid::{CellEditor, GridDelegate, PendingCell};
 use crate::record_dialog;
 use crate::util::{format_duration, group_digits, io};
@@ -67,7 +72,9 @@ pub struct TableView {
     context_cell: Option<(usize, usize)>,
     open_menu: Option<(Entity<PopupMenu>, Point<Pixels>, Subscription)>,
     table: Entity<TableState<GridDelegate>>,
-    filter_input: Entity<InputState>,
+    filter_input: Entity<EditorState>,
+    /// Fields offered by the filter bar's autocompletion.
+    filter_fields: Rc<RefCell<Vec<FilterField>>>,
     filter_error: Option<SharedString>,
     filter: Option<Expr>,
     sort: Vec<SortSpec>,
@@ -128,16 +135,41 @@ impl TableView {
         });
         // No hint until the columns are known: the example is built from them
         // (a generic one would flash and then be replaced).
-        let filter_input = cx.new(|cx| InputState::new(window, cx));
+        // A one-line editor (rather than a plain input) for autocompletion.
+        let filter_fields: Rc<RefCell<Vec<FilterField>>> = Default::default();
+        let filter_input = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .line_number(false)
+                .folding(false)
+                .indent_guides(false)
+                .soft_wrap(false)
+                .searchable(false)
+                .submit_on_enter(true)
+        });
+        let provider = Rc::new(FilterCompletion { kind: conn.kind(), fields: filter_fields.clone() });
+        filter_input.update(cx, |e, _| e.lsp_mut().completion_provider = Some(provider));
         let subs = vec![
             cx.subscribe_in(&table, window, Self::on_table_event),
             cx.subscribe_in(&filter_input, window, |this, _, ev: &InputEvent, window, cx| match ev {
                 InputEvent::PressEnter { .. } => this.apply_filter(window, cx),
-                InputEvent::Change
-                    if this.filter_error.is_some() => {
+                InputEvent::Change => {
+                    // The filter is one line: drop line breaks (from Enter or
+                    // pasted multi-line text).
+                    let value = this.filter_input.read(cx).value().to_string();
+                    if value.contains(['\n', '\r']) {
+                        let clean = value.trim_end_matches(['\n', '\r']).replace(['\n', '\r'], " ");
+                        let end = clean.len();
+                        this.filter_input.update(cx, |s, cx| {
+                            s.set_value(clean, window, cx);
+                            s.set_selected_range(end..end, cx);
+                        });
+                        return;
+                    }
+                    if this.filter_error.is_some() {
                         this.filter_error = None;
                         cx.notify();
                     }
+                }
                 _ => {}
             }),
         ];
@@ -154,6 +186,7 @@ impl TableView {
             open_menu: None,
             table,
             filter_input,
+            filter_fields,
             filter_error: None,
             filter: None,
             sort: Vec::new(),
@@ -270,6 +303,7 @@ impl TableView {
                             }
                         });
                         this.mark_references(cx);
+                        this.update_filter_fields(cx);
                         // An unfiltered single page: the count is exact already.
                         if this.page == 0 && (rows as u64) < this.page_size {
                             this.total = Some(rows as u64);
@@ -1071,6 +1105,84 @@ impl TableView {
         self.emit_open(target, window, cx);
     }
 
+    fn render_filter_box(&self, theme: &gpui_kit::component::Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let has_text = !self.filter_input.read(cx).value().is_empty();
+        h_flex()
+            .flex_1()
+            .min_w(px(200.))
+            .h(px(28.))
+            .px_2()
+            .gap_1p5()
+            .rounded(theme.radius)
+            .border_1()
+            .border_color(if self.filter_error.is_some() { theme.danger } else { theme.input })
+            .bg(theme.background)
+            .child(Icon::new(Lucide::ListFilter).small().text_color(theme.muted_foreground))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .text_sm()
+                    .child(Editor::new(&self.filter_input).appearance(false).bordered(false).h_full()),
+            )
+            .when(has_text, |this| {
+                this.child(
+                    Button::new("clear-filter")
+                        .ghost()
+                        .xsmall()
+                        .icon(Icon::new(Lucide::X))
+                        .tooltip("Clear filter")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.filter_input.update(cx, |s, cx| s.set_value("", window, cx));
+                            this.apply_filter(window, cx);
+                        })),
+                )
+            })
+    }
+
+    /// Refresh what the filter bar suggests: the columns, and for Mongo also
+    /// nested paths seen in the loaded documents (`address.city`).
+    fn update_filter_fields(&mut self, cx: &App) {
+        let d = self.table.read(cx).delegate();
+        let mut fields: Vec<FilterField> = d
+            .set
+            .columns
+            .iter()
+            .map(|c| FilterField { name: c.name.clone(), kind: c.kind, type_name: c.type_name.clone() })
+            .collect();
+        if let Some(docs) = d.set.documents.as_ref() {
+            fn walk(doc: &bson::Document, prefix: &str, depth: usize, out: &mut Vec<FilterField>) {
+                for (k, v) in doc {
+                    let path = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
+                    if !prefix.is_empty() && !out.iter().any(|f| f.name == path) {
+                        let kind = dbclaw_drivers::bson_kind(v);
+                        out.push(FilterField {
+                            name: path.clone(),
+                            kind,
+                            type_name: dbclaw_core::complete::mongo_kind_label(kind).to_string(),
+                        });
+                    }
+                    if depth < 3 {
+                        match v {
+                            bson::Bson::Document(d) => walk(d, &path, depth + 1, out),
+                            bson::Bson::Array(items) => {
+                                for d in items.iter().filter_map(bson::Bson::as_document).take(3) {
+                                    walk(d, &path, depth + 1, out);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            for doc in docs.iter().take(50) {
+                walk(doc, "", 1, &mut fields);
+            }
+        }
+        *self.filter_fields.borrow_mut() = fields;
+    }
+
     fn go_to_page(&mut self, page: u64, cx: &mut Context<Self>) {
         if page != self.page {
             self.page = page;
@@ -1375,15 +1487,7 @@ impl Render for TableView {
             .py_1p5()
             .border_b_1()
             .border_color(theme.border)
-            .child(
-                div().flex_1().min_w(px(200.)).child(
-                    Input::new(&self.filter_input)
-                        .small()
-                        .prefix(Icon::new(Lucide::ListFilter).small().text_color(theme.muted_foreground))
-                        .cleanable(true)
-                        .when(self.filter_error.is_some(), |i| i.bordered(true)),
-                ),
-            )
+            .child(self.render_filter_box(&theme, cx))
             .child(
                 Popover::new("filter-help")
                     .trigger(Button::new("help").ghost().small().icon(Icon::new(Lucide::CircleQuestionMark)).tooltip("Filter syntax"))

@@ -12,6 +12,7 @@ use dbclaw_core::model::{
     ApplySummary, Cell, ColumnMeta, ConnectionConfig, ForeignKey, NewValue, ObjectInfo, ObjectKind, ObjectRef,
     PageRequest, QueryOutput, ResultSet, RowChange, RowCount, RowKey, SortDir, ValueKind,
 };
+use dbclaw_core::complete::{Catalog, CatalogTable};
 use dbclaw_core::mongo_refs;
 use dbclaw_core::mongo_shell::{self, MongoCommand, UpdateSpec};
 use futures_util::{StreamExt as _, TryStreamExt as _};
@@ -424,6 +425,71 @@ impl MongoConnection {
         }
         out.sort_by(|a, b| a.name.cmp(&b.name));
         self.ref_cache.lock().unwrap().insert(key, (std::time::Instant::now(), out.clone()));
+        Ok(out)
+    }
+
+    /// Collection names, for autocompletion.
+    pub async fn catalog(&self, database: &str) -> Result<Catalog> {
+        let mut names = self.client.database(database).list_collection_names().await?;
+        names.retain(|n| !n.starts_with("system."));
+        names.sort();
+        Ok(Catalog {
+            tables: names
+                .into_iter()
+                .map(|name| CatalogTable { name, ..Default::default() })
+                .collect(),
+        })
+    }
+
+    /// Field paths seen in a sample of the collection (`address.city`,
+    /// `items.sku`, …), for autocompletion. Uses the shared sample cache.
+    pub async fn field_paths(&self, database: &str, collection: &str) -> Result<Vec<(String, ValueKind)>> {
+        let key = (database.to_string(), collection.to_string());
+        let cached = self
+            .sample_cache
+            .lock()
+            .unwrap()
+            .get(&key)
+            .filter(|(at, _)| at.elapsed() < REF_CACHE_TTL)
+            .map(|(_, d)| d.clone());
+        let docs = match cached {
+            Some(d) => d,
+            None => {
+                let c = self.client.database(database).collection::<Document>(collection);
+                let docs: Vec<Document> = c
+                    .find(doc! {})
+                    .limit(REF_SAMPLE)
+                    .max_time(Duration::from_millis(1000))
+                    .await?
+                    .try_collect()
+                    .await?;
+                self.sample_cache.lock().unwrap().insert(key, (std::time::Instant::now(), docs.clone()));
+                docs
+            }
+        };
+        let mut out: Vec<(String, ValueKind)> = Vec::new();
+        fn walk(doc: &Document, prefix: &str, depth: usize, out: &mut Vec<(String, ValueKind)>) {
+            for (k, v) in doc {
+                let path = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
+                if !out.iter().any(|(p, _)| *p == path) {
+                    out.push((path.clone(), bson_kind(v)));
+                }
+                if depth < 3 {
+                    match v {
+                        Bson::Document(d) => walk(d, &path, depth + 1, out),
+                        Bson::Array(items) => {
+                            for d in items.iter().filter_map(Bson::as_document).take(5) {
+                                walk(d, &path, depth + 1, out);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        for d in &docs {
+            walk(d, "", 1, &mut out);
+        }
         Ok(out)
     }
 

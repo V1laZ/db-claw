@@ -3,6 +3,7 @@
 mod actions;
 mod connection_dialog;
 mod control;
+mod completion;
 mod console;
 mod grid;
 mod navigator;
@@ -14,6 +15,7 @@ mod util;
 mod workspace;
 
 use gpui_kit::component::Theme;
+use gpui_kit::component::input::ShowCompletions;
 use gpui_kit::*;
 
 use actions::*;
@@ -51,6 +53,8 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new(platform_keys("secondary-]"), NextPage, Some("TableView && !Input")),
         KeyBinding::new(platform_keys("secondary-["), PrevPage, Some("TableView && !Input")),
         KeyBinding::new(platform_keys("secondary-enter"), RunQuery, Some("Console")),
+        // Autocompletion on demand (it also pops up while typing).
+        KeyBinding::new("ctrl-space", ShowCompletions, Some("Input")),
         KeyBinding::new(platform_keys("secondary-shift-enter"), RunAll, Some("Console")),
         KeyBinding::new(platform_keys("secondary-."), CancelQuery, Some("Console")),
     ]

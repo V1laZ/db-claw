@@ -106,6 +106,23 @@ impl Connection {
         }
     }
 
+    /// Names for autocompletion: tables with columns (Postgres) or
+    /// collections (Mongo).
+    pub async fn catalog(&self, database: &str) -> Result<dbclaw_core::complete::Catalog> {
+        match self {
+            Connection::Pg(c) => c.catalog(database).await,
+            Connection::Mongo(c) => c.catalog(database).await,
+        }
+    }
+
+    /// Field paths of a Mongo collection from a (cached) sample.
+    pub async fn field_paths(&self, database: &str, collection: &str) -> Result<Vec<(String, dbclaw_core::model::ValueKind)>> {
+        match self {
+            Connection::Pg(_) => Ok(Vec::new()),
+            Connection::Mongo(c) => c.field_paths(database, collection).await,
+        }
+    }
+
     /// Foreign keys from and to a table: declared ones for Postgres,
     /// inferred ObjectId references for Mongo.
     pub async fn foreign_keys(&self, object: &ObjectRef) -> Result<Vec<ForeignKey>> {

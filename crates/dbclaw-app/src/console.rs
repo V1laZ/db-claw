@@ -16,7 +16,12 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use std::rc::Rc;
+
+use gpui_kit::component::input::CompletionProvider;
+
 use crate::actions::*;
+use crate::completion::{MongoCompletion, SharedCatalog, SqlCompletion};
 use crate::grid::GridDelegate;
 use crate::util::{format_duration, group_digits};
 
@@ -72,6 +77,20 @@ impl ConsoleView {
                 .line_number(true)
                 .default_value(initial)
         });
+        // Autocompletion from the database's tables/collections (loaded in
+        // the background; suggestions appear as soon as it's there).
+        let catalog = SharedCatalog::load(conn.clone(), database.clone(), cx);
+        let provider: Rc<dyn CompletionProvider> = match conn.kind() {
+            DbKind::Postgres => Rc::new(SqlCompletion { catalog }),
+            DbKind::Mongo => Rc::new(MongoCompletion {
+                conn: conn.clone(),
+                database: database.clone(),
+                catalog,
+                default_collection: collection.clone(),
+                fields: Default::default(),
+            }),
+        };
+        editor.update(cx, |e, _| e.lsp_mut().completion_provider = Some(provider));
         let table = cx.new(|cx| {
             TableState::new(GridDelegate::new(), window, cx)
                 .cell_selectable(true)

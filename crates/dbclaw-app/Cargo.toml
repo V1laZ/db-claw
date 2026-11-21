@@ -22,6 +22,7 @@ bson.workspace = true
 dirs = "6"
 uuid = { version = "1", features = ["v4"] }
 futures = "0.3"
+lsp-types = { version = "0.97", features = ["proposed"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 raw-window-handle = "0.6"

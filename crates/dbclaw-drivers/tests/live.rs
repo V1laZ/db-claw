@@ -140,6 +140,25 @@ async fn postgres_foreign_keys() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn completion_catalogs() {
+    if !live() {
+        return;
+    }
+    let pg = Connection::open(pg_config()).await.unwrap();
+    let cat = pg.catalog("shop").await.unwrap();
+    let customers = cat.tables.iter().find(|t| t.name == "customers").unwrap();
+    assert!(customers.columns.iter().any(|c| c.name == "email" && c.type_name == "text"));
+    assert!(cat.tables.iter().any(|t| t.schema == "analytics" && t.name == "revenue_by_country" && t.view));
+
+    let mongo = Connection::open(mongo_config()).await.unwrap();
+    let cat = mongo.catalog("shop").await.unwrap();
+    assert!(cat.tables.iter().any(|t| t.name == "users"));
+    let paths = mongo.field_paths("shop", "users").await.unwrap();
+    assert!(paths.iter().any(|(p, _)| p == "address.city"), "{paths:?}");
+    assert!(paths.iter().any(|(p, k)| p == "_id" && *k == ValueKind::Uuid));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn postgres_count_is_time_limited() {
     if !live() {
         return;

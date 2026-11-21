@@ -552,7 +552,21 @@ impl Ctx {
                     for k in keys.split_whitespace() {
                         let ks = Keystroke::parse_with_os(k, os)
                             .map_err(|e| anyhow!("bad keystroke `{}`", e.keystroke))?;
-                        window.dispatch_keystroke(ks, cx);
+                        if ks.key.chars().count() == 1 || ks.key == "space" {
+                            // Printable: also types the character.
+                            window.dispatch_keystroke(ks, cx);
+                        } else {
+                            // Enter, Tab, arrows…: a key event only, like a real
+                            // keyboard (no "\n"/"\t" typed after the action).
+                            window.dispatch_event(
+                                PlatformInput::KeyDown(KeyDownEvent {
+                                    keystroke: ks,
+                                    is_held: false,
+                                    prefer_character_input: false,
+                                }),
+                                cx,
+                            );
+                        }
                     }
                     Ok(())
                 })??;

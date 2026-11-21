@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow, bail};
+use dbclaw_core::complete::{Catalog, CatalogColumn, CatalogTable};
 use dbclaw_core::filter::{self, SqlColumn};
 use dbclaw_core::model::{
     ApplySummary, Cell, ColumnMeta, ConnectionConfig, ForeignKey, NewValue, ObjectInfo, ObjectKind, ObjectRef,
@@ -222,6 +223,42 @@ impl PgConnection {
                 }
             })
             .collect())
+    }
+
+    /// Every table/view with its columns, for autocompletion (one catalog
+    /// query, capped).
+    pub async fn catalog(&self, database: &str) -> Result<Catalog> {
+        let c = self.browse_client(database).await?;
+        let rows = simple_rows(
+            &c.client,
+            "SELECT n.nspname, c.relname, c.relkind IN ('v','m'), a.attname, format_type(a.atttypid, a.atttypmod) \
+             FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+             LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped \
+             WHERE c.relkind IN ('r','p','v','m','f') AND NOT c.relispartition \
+               AND n.nspname <> 'information_schema' AND n.nspname NOT LIKE 'pg\\_%' \
+             ORDER BY 1, 2, a.attnum LIMIT 50000",
+        )
+        .await?;
+        let mut catalog = Catalog::default();
+        for r in &rows {
+            let (schema, name) = (r.get(0).unwrap_or_default(), r.get(1).unwrap_or_default());
+            let same = catalog.tables.last().is_some_and(|t| t.schema == schema && t.name == name);
+            if !same {
+                catalog.tables.push(CatalogTable {
+                    schema: schema.to_string(),
+                    name: name.to_string(),
+                    view: r.get(2) == Some("t"),
+                    columns: Vec::new(),
+                });
+            }
+            if let Some(col) = r.get(3) {
+                catalog.tables.last_mut().unwrap().columns.push(CatalogColumn {
+                    name: col.to_string(),
+                    type_name: r.get(4).unwrap_or_default().to_string(),
+                });
+            }
+        }
+        Ok(catalog)
     }
 
     /// Foreign keys from this table (outgoing) and to it (incoming).
