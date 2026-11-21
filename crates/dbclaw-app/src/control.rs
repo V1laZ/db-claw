@@ -494,26 +494,14 @@ impl Ctx {
                 .map_err(|e| anyhow!(e))?;
                 let (object, filter) = target;
                 let conn_id = cx.update(|_, cx| t.read(cx).conn_id.clone())?;
-                let source = t.clone();
                 let target_tab = self
                     .ws(cx, |ws, window, cx| {
-                        ws.follow_reference(&source, &conn_id, &object, filter.clone(), window, cx);
+                        ws.open_object(&conn_id, &object, Some(filter.clone()), window, cx);
                         ws.find_table(&conn_id, &object, cx)
                     })?
                     .ok_or_else(|| anyhow!("could not open {}", object.display_name()))?;
                 self.wait_table(cx, &target_tab).await?;
                 self.table_json(cx, &target_tab, p_u64(&params, "rows").unwrap_or(20) as usize)
-            }
-            "back" | "forward" => {
-                let moved = self.ws(cx, |ws, window, cx| {
-                    if method == "back" { ws.go_back(window, cx) } else { ws.go_forward(window, cx) }
-                })?;
-                if !moved {
-                    bail!("nothing to go {method} to");
-                }
-                let t = self.table(cx, &json!({}))?;
-                self.wait_table(cx, &t).await?;
-                self.table_json(cx, &t, p_u64(&params, "rows").unwrap_or(20) as usize)
             }
             "open_console" => {
                 let (config, conn) = self.live(cx, req_str(&params, "connection")?).await?;

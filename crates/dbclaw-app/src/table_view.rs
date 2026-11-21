@@ -48,17 +48,8 @@ pub struct TableSource {
 /// reuses) a tab for `object` filtered with `filter`.
 pub enum TableViewEvent {
     OpenReference { conn_id: String, object: ObjectRef, filter: String },
-    GoBack,
-    GoForward,
 }
 
-/// Back/forward targets shown on the toolbar arrows (set by the workspace,
-/// which owns the history).
-#[derive(Clone, Default, PartialEq)]
-pub struct NavState {
-    pub back: Option<SharedString>,
-    pub forward: Option<SharedString>,
-}
 
 pub const PAGE_SIZES: [u64; 4] = [100, 500, 1000, 5000];
 
@@ -75,7 +66,6 @@ pub struct TableView {
     /// Last right-clicked (row, table column), for the context menu.
     context_cell: Option<(usize, usize)>,
     open_menu: Option<(Entity<PopupMenu>, Point<Pixels>, Subscription)>,
-    nav: NavState,
     table: Entity<TableState<GridDelegate>>,
     filter_input: Entity<InputState>,
     filter_error: Option<SharedString>,
@@ -162,7 +152,6 @@ impl TableView {
             fks: Vec::new(),
             context_cell: None,
             open_menu: None,
-            nav: NavState::default(),
             table,
             filter_input,
             filter_error: None,
@@ -1387,30 +1376,6 @@ impl Render for TableView {
             .border_b_1()
             .border_color(theme.border)
             .child(
-                Button::new("nav-back")
-                    .ghost()
-                    .small()
-                    .icon(Icon::new(Lucide::ArrowLeft))
-                    .disabled(self.nav.back.is_none())
-                    .tooltip(match &self.nav.back {
-                        Some(l) => SharedString::from(format!("Back to {l} (⌥←)")),
-                        None => "Back (⌥←)".into(),
-                    })
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(TableViewEvent::GoBack))),
-            )
-            .child(
-                Button::new("nav-forward")
-                    .ghost()
-                    .small()
-                    .icon(Icon::new(Lucide::ArrowRight))
-                    .disabled(self.nav.forward.is_none())
-                    .tooltip(match &self.nav.forward {
-                        Some(l) => SharedString::from(format!("Forward to {l} (⌥→)")),
-                        None => "Forward (⌥→)".into(),
-                    })
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(TableViewEvent::GoForward))),
-            )
-            .child(
                 div().flex_1().min_w(px(200.)).child(
                     Input::new(&self.filter_input)
                         .small()
@@ -1658,33 +1623,6 @@ impl TableView {
 
     pub fn filter_error(&self) -> Option<SharedString> {
         self.filter_error.clone()
-    }
-
-    pub fn set_nav(&mut self, nav: NavState, cx: &mut Context<Self>) {
-        if self.nav != nav {
-            self.nav = nav;
-            cx.notify();
-        }
-    }
-
-    pub fn filter_text(&self, cx: &App) -> String {
-        self.filter_input.read(cx).value().to_string()
-    }
-
-    pub fn page(&self) -> u64 {
-        self.page
-    }
-
-    /// Restore a filter + page in one reload (navigation history).
-    pub fn restore_view(&mut self, filter_text: &str, page: u64, window: &mut Window, cx: &mut Context<Self>) {
-        if self.filter_text(cx) == filter_text && self.page == page {
-            return;
-        }
-        self.filter_input.update(cx, |s, cx| s.set_value(filter_text.to_string(), window, cx));
-        self.filter_error = None;
-        self.filter = filter::parse(filter_text).ok().flatten();
-        self.page = page;
-        self.reload(true, cx);
     }
 
     pub fn set_filter_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {

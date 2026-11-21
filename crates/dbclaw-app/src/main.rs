@@ -36,8 +36,6 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new(platform_keys("secondary-shift-]"), NextTab, Some("Workspace")),
         KeyBinding::new(platform_keys("secondary-shift-["), PrevTab, Some("Workspace")),
         KeyBinding::new(platform_keys("secondary-b"), ToggleSidebar, Some("Workspace")),
-        KeyBinding::new("alt-left", GoBack, Some("Workspace && !Input")),
-        KeyBinding::new("alt-right", GoForward, Some("Workspace && !Input")),
         KeyBinding::new(platform_keys("secondary-p"), SearchTables, Some("Workspace")),
         KeyBinding::new(platform_keys("secondary-s"), SaveChanges, Some("TableView")),
         KeyBinding::new(platform_keys("secondary-r"), Refresh, Some("TableView")),

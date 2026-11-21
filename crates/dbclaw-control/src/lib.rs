@@ -279,16 +279,6 @@ pub static METHODS: &[MethodSpec] = &[
         ],
     },
     MethodSpec {
-        name: "back",
-        description: "Go back to where you were before the last follow_reference (tab, filter and page), like a browser. Waits for the data.",
-        params: &[("rows", "integer", "Rows to include in the reply (default 20)", false)],
-    },
-    MethodSpec {
-        name: "forward",
-        description: "Undo `back`.",
-        params: &[("rows", "integer", "Rows to include in the reply (default 20)", false)],
-    },
-    MethodSpec {
         name: "open_console",
         description: "Open a query console tab (SQL for Postgres, mongosh syntax for Mongo). Returns the tab.",
         params: &[

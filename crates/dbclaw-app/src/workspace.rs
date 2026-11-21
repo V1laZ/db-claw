@@ -18,7 +18,7 @@ use crate::connection_dialog;
 use crate::console::ConsoleView;
 use crate::navigator::{NavEvent, Navigator};
 use crate::state::{AppEvent, AppState};
-use crate::table_view::{NavState, TableSource, TableView, TableViewEvent};
+use crate::table_view::{TableSource, TableView, TableViewEvent};
 
 /// Same table, ignoring the object kind (FK targets don't know if a table
 /// is partitioned the way the navigator does).
@@ -48,25 +48,12 @@ impl Tab {
     }
 }
 
-/// A place to go back/forward to: a data tab with its filter and page.
-#[derive(Clone)]
-struct Location {
-    tab: EntityId,
-    filter: String,
-    page: u64,
-    label: SharedString,
-}
-
-const HISTORY_LIMIT: usize = 100;
-
 pub struct Workspace {
     state: Entity<AppState>,
     navigator: Entity<Navigator>,
     tabs: Vec<Tab>,
     active: usize,
     sidebar: bool,
-    back: Vec<Location>,
-    forward: Vec<Location>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -104,8 +91,6 @@ impl Workspace {
             tabs: Vec::new(),
             active: 0,
             sidebar: true,
-            back: Vec::new(),
-            forward: Vec::new(),
             focus,
             _subs: subs,
         }
@@ -181,18 +166,11 @@ impl Workspace {
         let (conn_id, object) = (conn_id.to_string(), object.clone());
         let source = TableSource { conn_id, conn_name: name, conn, read_only };
         let view = cx.new(|cx| TableView::new(source, object, filter, window, cx));
-        let sub = cx.subscribe_in(&view, window, |this, from, ev: &TableViewEvent, window, cx| match ev {
+        let sub = cx.subscribe_in(&view, window, |this, _, ev: &TableViewEvent, window, cx| match ev {
             TableViewEvent::OpenReference { conn_id, object, filter } => {
-                this.follow_reference(from, conn_id, object, filter.clone(), window, cx)
-            }
-            TableViewEvent::GoBack => {
-                this.go_back(window, cx);
-            }
-            TableViewEvent::GoForward => {
-                this.go_forward(window, cx);
+                this.open_object(conn_id, object, Some(filter.clone()), window, cx)
             }
         });
-        view.update(cx, |v, cx| v.set_nav(self.nav_state(), cx));
         self._subs.push(sub);
         let ix = (self.active + 1).min(self.tabs.len());
         self.tabs.insert(ix, Tab::Table(view));
@@ -286,9 +264,6 @@ impl Workspace {
     pub fn remove_tab(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ix) = self.tabs.iter().position(|t| t.entity_id() == id) else { return };
         self.tabs.remove(ix);
-        self.back.retain(|l| l.tab != id);
-        self.forward.retain(|l| l.tab != id);
-        self.sync_nav(cx);
         if self.tabs.is_empty() {
             self.active = 0;
             self.focus.focus(window, cx);
@@ -454,106 +429,6 @@ impl Workspace {
     }
 }
 
-// ---- navigation history (foreign keys) ------------------------------------
-
-impl Workspace {
-    fn location_of(view: &Entity<TableView>, cx: &App) -> Location {
-        let t = view.read(cx);
-        let filter = t.filter_text(cx);
-        let label = if filter.trim().is_empty() {
-            format!("{} (all rows)", t.title())
-        } else {
-            format!("{} · {}", t.title(), filter.trim())
-        };
-        Location { tab: view.entity_id(), filter, page: t.page(), label: label.into() }
-    }
-
-    fn active_location(&self, cx: &App) -> Option<Location> {
-        match self.tabs.get(self.active) {
-            Some(Tab::Table(t)) => Some(Self::location_of(t, cx)),
-            _ => None,
-        }
-    }
-
-    /// Follow a foreign key from `from`, remembering where we came from.
-    pub fn follow_reference(
-        &mut self,
-        from: &Entity<TableView>,
-        conn_id: &str,
-        object: &ObjectRef,
-        filter: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.back.push(Self::location_of(from, cx));
-        if self.back.len() > HISTORY_LIMIT {
-            self.back.remove(0);
-        }
-        self.forward.clear();
-        self.open_object(conn_id, object, Some(filter), window, cx);
-        self.sync_nav(cx);
-    }
-
-    /// Go to a location; false when its tab has been closed.
-    fn restore(&mut self, loc: &Location, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(ix) = self.tabs.iter().position(|t| t.entity_id() == loc.tab) else {
-            return false;
-        };
-        if let Tab::Table(t) = &self.tabs[ix] {
-            t.update(cx, |t, cx| t.restore_view(&loc.filter, loc.page, window, cx));
-        }
-        self.activate(ix, window, cx);
-        true
-    }
-
-    pub fn go_back(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        while let Some(loc) = self.back.pop() {
-            let current = self.active_location(cx);
-            if self.restore(&loc, window, cx) {
-                if let Some(current) = current {
-                    self.forward.push(current);
-                }
-                self.sync_nav(cx);
-                cx.notify();
-                return true;
-            }
-        }
-        false
-    }
-
-    pub fn go_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        while let Some(loc) = self.forward.pop() {
-            let current = self.active_location(cx);
-            if self.restore(&loc, window, cx) {
-                if let Some(current) = current {
-                    self.back.push(current);
-                }
-                self.sync_nav(cx);
-                cx.notify();
-                return true;
-            }
-        }
-        false
-    }
-
-    fn nav_state(&self) -> NavState {
-        NavState {
-            back: self.back.last().map(|l| l.label.clone()),
-            forward: self.forward.last().map(|l| l.label.clone()),
-        }
-    }
-
-    /// Push the current back/forward targets to every data tab's arrows.
-    fn sync_nav(&self, cx: &mut Context<Self>) {
-        let nav = self.nav_state();
-        for tab in &self.tabs {
-            if let Tab::Table(t) = tab {
-                t.update(cx, |t, cx| t.set_nav(nav.clone(), cx));
-            }
-        }
-    }
-}
-
 // ---- automation API ----------------------------------------------------------
 
 impl Workspace {
@@ -632,12 +507,6 @@ impl Render for Workspace {
                     let ix = (this.active + this.tabs.len() - 1) % this.tabs.len();
                     this.activate(ix, window, cx);
                 }
-            }))
-            .on_action(cx.listener(|this, _: &GoBack, window, cx| {
-                this.go_back(window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &GoForward, window, cx| {
-                this.go_forward(window, cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
                 this.sidebar = !this.sidebar;

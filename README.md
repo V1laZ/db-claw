@@ -43,11 +43,11 @@ MongoDB Atlas-style `mongodb+srv://` hosts are supported.
 | Sidebar | Click a connection to connect, then a table / collection to open it. ⌘P searches tables. Right-click for consoles, refresh, edit, delete. |
 | Filter bar (⌘F) | Universal filter language, applied with Enter. `?` shows the cheat sheet. Right-click a cell → *Filter by this value*. |
 | Grid | Click a header to sort (server-side). Double-click / Enter / F2 edits a cell, ⌘⇧N sets NULL, ⌘⌫ marks a row for deletion, ⌘C copies, ⌘[ / ⌘] pages. |
-| References | Foreign-key columns show a link icon in the header and an ↗ arrow in each cell. Click it to open the referenced row. Right-click a row → *Referenced by* opens the rows of other tables that point to it. On MongoDB, references are inferred: fields holding ObjectIds (or arrays of them, or DBRefs), including nested ones like `address.cityId` and `items.productId`, are matched to collections by name (`userId` → `users`) and confirmed by finding a sampled id in that collection; unusual names fall back to looking the id up in every collection. When one column holds several references (e.g. `route.fromCityId`, `route.toCityId`), its arrow opens a chooser listing each path and its target. **←/→** left of the filter (⌥← / ⌥→) go back and forward, like a browser, restoring each tab's filter and page. |
+| References | Foreign-key columns show a link icon in the header and an ↗ arrow in each cell. Click it to open the referenced row. Right-click a row → *Referenced by* opens the rows of other tables that point to it. On MongoDB, references are inferred: fields holding ObjectIds (or arrays of them, or DBRefs), including nested ones like `address.cityId` and `items.productId`, are matched to collections by name (`userId` → `users`) and confirmed by finding a sampled id in that collection; unusual names fall back to looking the id up in every collection. When one column holds several references (e.g. `route.fromCityId`, `route.toCityId`), its arrow opens a chooser listing each path and its target. |
 | Saving | Edited cells turn yellow, deleted rows are struck through. ⌘S saves, *Discard* reverts. Postgres saves in one transaction and every UPDATE/DELETE must hit exactly one row (by primary key, or `ctid` for tables without one). |
 | Insert | ⌘I or **+**: a form for SQL tables (empty = column default / NULL), a relaxed-JSON editor for Mongo. Right-click → *Duplicate row…* pre-fills it. |
 | Console (⌘T) | ⌘↵ runs the statement at the cursor (or the selection); ⇧⌘↵ runs everything; ⌘. cancels. In a Mongo console a bare `{…}` filter runs `find` on the current collection. |
-| Tabs | ⌘W closes, ⌃Tab / ⌘⇧] switches, ⌥← / ⌥→ go back / forward, ⌘B toggles the sidebar. |
+| Tabs | ⌘W closes, ⌃Tab / ⌘⇧] switches, ⌘B toggles the sidebar. |
 
 ### Filter language
 
@@ -105,7 +105,7 @@ dbclaw-ctl add_connection kind=postgres host=db.local port=5432 user=me password
 dbclaw-ctl open_table connection=postgres name=customers
 dbclaw-ctl filter text='country = "CZ" and balance > 1000'
 dbclaw-ctl sort column=balance dir=desc
-dbclaw-ctl follow_reference row=0 column=customer_id     # foreign key → customers; `back` returns
+dbclaw-ctl follow_reference row=0 column=customer_id     # foreign key → customers
 dbclaw-ctl edit_cell row=0 column=name value='"Eva"'
 dbclaw-ctl save
 dbclaw-ctl run connection=mongo text='db.orders.aggregate([{$group: {_id: "$status", n: {$sum: 1}}}])'
