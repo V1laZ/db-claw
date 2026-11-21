@@ -870,7 +870,57 @@ impl TableView {
     /// context menu doesn't open on cells when cell selection is on.)
     fn open_row_menu(&mut self, row: usize, table_col: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.context_cell = Some((row, table_col));
-        let spec = RowMenu {
+        let spec = self.row_menu_spec(row, table_col, cx);
+        self.show_menu(window, cx, move |m, view| spec.build(m, view));
+    }
+
+    /// The arrow of a column holding several references: pick one.
+    fn open_reference_chooser(&mut self, row: usize, col: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(name) = self.table.read(cx).delegate().column_meta(col).map(|c| c.name.clone()) else {
+            return;
+        };
+        let choices: Vec<(String, String)> = self
+            .outgoing_fks()
+            .filter(|f| top_level(&f.from_columns[0]) == name)
+            .map(|f| (f.from_columns[0].clone(), f.target_label()))
+            .collect();
+        self.show_menu(window, cx, move |menu, view| {
+            let mut menu = menu.label("Follow reference");
+            for (path, target) in choices {
+                menu = menu.item(act_owned(
+                    format!("{path}  →  {target}"),
+                    Lucide::ArrowUpRight,
+                    view.clone(),
+                    Rc::new(move |t, w, cx| {
+                        let target = t.reference_target(row, &path, cx);
+                        t.emit_open(target, w, cx);
+                    }),
+                ));
+            }
+            menu
+        });
+    }
+
+    fn show_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        build: impl FnOnce(PopupMenu, WeakEntity<TableView>) -> PopupMenu + 'static,
+    ) {
+        let view = cx.entity().downgrade();
+        let position = window.mouse_position();
+        let menu = PopupMenu::build(window, cx, move |m, _, _| build(m, view));
+        menu.focus_handle(cx).focus(window, cx);
+        let sub = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, _, cx| {
+            this.open_menu = None;
+            cx.notify();
+        });
+        self.open_menu = Some((menu, position, sub));
+        cx.notify();
+    }
+
+    fn row_menu_spec(&self, row: usize, table_col: usize, cx: &App) -> RowMenu {
+        RowMenu {
             row,
             col: table_col.checked_sub(1),
             deleted: self.table.read(cx).delegate().deleted.contains(&row),
@@ -884,17 +934,7 @@ impl TableView {
                 })
                 .collect(),
             incoming: self.incoming_fks().map(|f| (f.name.clone(), f.source_label())).collect(),
-        };
-        let view = cx.entity().downgrade();
-        let position = window.mouse_position();
-        let menu = PopupMenu::build(window, cx, move |m, _, _| spec.build(m, view));
-        menu.focus_handle(cx).focus(window, cx);
-        let sub = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, _, cx| {
-            this.open_menu = None;
-            cx.notify();
-        });
-        self.open_menu = Some((menu, position, sub));
-        cx.notify();
+        }
     }
 
     // ---- foreign-key navigation ------------------------------------------
@@ -1027,7 +1067,9 @@ impl TableView {
             .collect();
         if paths.len() > 1 {
             // Several references inside this column: let the user pick.
-            self.open_row_menu(row, col + 1, window, cx);
+            // Open after the click has finished dispatching, or the table
+            // taking focus back would dismiss the menu right away.
+            cx.defer_in(window, move |this, window, cx| this.open_reference_chooser(row, col, window, cx));
             return;
         }
         let target = self.reference_target(row, paths.first().unwrap_or(&name), cx);
