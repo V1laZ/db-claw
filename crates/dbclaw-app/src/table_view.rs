@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use dbclaw_core::filter::{self, Expr};
 use dbclaw_core::model::{
-    Cell, ColumnMeta, DbKind, NewValue, ObjectRef, PageRequest, RowChange, RowKey, SortDir,
+    Cell, ColumnMeta, DbKind, ForeignKey, NewValue, ObjectRef, PageRequest, RowChange, RowKey, SortDir,
     SortSpec,
 };
 use dbclaw_core::mongo_shell;
@@ -14,7 +14,7 @@ use dbclaw_drivers::Connection;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::menu::PopupMenuItem;
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::table::{ColumnSort, DataTable, TableEvent, TableSelection, TableState};
@@ -36,6 +36,20 @@ struct SaveError;
 pub type OnSuccess = Box<dyn FnOnce(&mut Window, &mut App)>;
 type RowAction = Rc<dyn Fn(&mut TableView, &mut Window, &mut Context<TableView>)>;
 
+/// The connection a data tab reads from.
+pub struct TableSource {
+    pub conn_id: String,
+    pub conn_name: SharedString,
+    pub conn: Connection,
+    pub read_only: bool,
+}
+
+/// Emitted when the user follows a foreign key; the workspace opens (or
+/// reuses) a tab for `object` filtered with `filter`.
+pub enum TableViewEvent {
+    OpenReference { conn_id: String, object: ObjectRef, filter: String },
+}
+
 pub const PAGE_SIZES: [u64; 4] = [100, 500, 1000, 5000];
 
 pub struct TableView {
@@ -46,6 +60,11 @@ pub struct TableView {
     editable: bool,
     columns: Vec<ColumnMeta>,
     columns_loaded: bool,
+    /// Foreign keys from (outgoing) and to (incoming) this table.
+    fks: Vec<ForeignKey>,
+    /// Last right-clicked (row, table column), for the context menu.
+    context_cell: Option<(usize, usize)>,
+    open_menu: Option<(Entity<PopupMenu>, Point<Pixels>, Subscription)>,
     table: Entity<TableState<GridDelegate>>,
     filter_input: Entity<InputState>,
     filter_error: Option<SharedString>,
@@ -67,16 +86,17 @@ pub struct TableView {
     _subs: Vec<Subscription>,
 }
 
+impl EventEmitter<TableViewEvent> for TableView {}
+
 impl TableView {
     pub fn new(
-        conn_id: String,
-        conn_name: SharedString,
-        conn: Connection,
+        source: TableSource,
         object: ObjectRef,
-        read_only: bool,
+        initial_filter: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let TableSource { conn_id, conn_name, conn, read_only } = source;
         let editable = !read_only && object.kind.is_editable();
         let weak = cx.entity().downgrade();
         let mut delegate = GridDelegate::new();
@@ -89,9 +109,8 @@ impl TableView {
         }
         {
             let weak = weak.clone();
-            delegate.context_menu = Some(Rc::new(move |row, menu, _window, cx| {
-                let Some(view) = weak.upgrade() else { return menu };
-                view.read(cx).row_menu(row, menu, weak.clone(), cx)
+            delegate.on_follow = Some(Rc::new(move |row, col, window, cx| {
+                weak.update(cx, |this, cx| this.follow_from_cell(row, col, window, cx)).ok();
             }));
         }
         let table = cx.new(|cx| {
@@ -127,6 +146,9 @@ impl TableView {
             editable,
             columns: Vec::new(),
             columns_loaded: false,
+            fks: Vec::new(),
+            context_cell: None,
+            open_menu: None,
             table,
             filter_input,
             filter_error: None,
@@ -147,6 +169,11 @@ impl TableView {
             focus: cx.focus_handle(),
             _subs: subs,
         };
+        if let Some(text) = initial_filter {
+            // Opened by following a reference: start filtered (one query).
+            this.filter = filter::parse(&text).ok().flatten();
+            this.filter_input.update(cx, |s, cx| s.set_value(text, window, cx));
+        }
         this.reload(true, cx);
         this
     }
@@ -198,9 +225,17 @@ impl TableView {
         let started = Instant::now();
         cx.spawn(async move |this, cx| {
             let result = io(async move {
-                let columns = if need_columns { conn.columns(&req.object).await? } else { columns };
+                let (columns, fks) = if need_columns {
+                    let mut columns = conn.columns(&req.object).await?;
+                    // Navigation is a nicety; don't fail the page if this does.
+                    let fks = conn.foreign_keys(&req.object).await.unwrap_or_default();
+                    annotate_references(&mut columns, &fks, &req.object);
+                    (columns, Some(fks))
+                } else {
+                    (columns, None)
+                };
                 let page = conn.fetch_page(&req, &columns).await?;
-                Ok((columns, page))
+                Ok((columns, fks, page))
             })
             .await;
             this.update(cx, |this, cx| {
@@ -210,7 +245,10 @@ impl TableView {
                 this.loading = false;
                 this.elapsed = Some(started.elapsed());
                 match result {
-                    Ok((columns, page)) => {
+                    Ok((columns, fks, page)) => {
+                        if let Some(fks) = fks {
+                            this.fks = fks;
+                        }
                         if need_columns {
                             this.columns = columns;
                             this.columns_loaded = true;
@@ -391,10 +429,12 @@ impl TableView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let TableEvent::DoubleClickedCell(row, col) = ev
-            && *col > 0 {
-                self.start_edit(*row, col - 1, window, cx);
-            }
+        match ev {
+            TableEvent::DoubleClickedCell(row, col) if *col > 0 => self.start_edit(*row, col - 1, window, cx),
+            TableEvent::RightClickedCell(row, col) => self.open_row_menu(*row, *col, window, cx),
+            TableEvent::RightClickedRow(Some(row)) => self.open_row_menu(*row, 0, window, cx),
+            _ => {}
+        }
     }
 
     fn selected_row(&self, cx: &App) -> Option<usize> {
@@ -805,53 +845,102 @@ impl TableView {
         cx.write_to_clipboard(ClipboardItem::new_string(text));
     }
 
-    fn row_menu(
-        &self,
-        row: usize,
-        menu: gpui_kit::component::menu::PopupMenu,
-        view: WeakEntity<TableView>,
-        cx: &App,
-    ) -> gpui_kit::component::menu::PopupMenu {
-        let col = match self.table.read(cx).right_clicked_cell() {
-            Some((_, c)) if c > 0 => Some(c - 1),
-            _ => None,
+    /// Show the context menu of a row at the pointer. (The table's own
+    /// context menu doesn't open on cells when cell selection is on.)
+    fn open_row_menu(&mut self, row: usize, table_col: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.context_cell = Some((row, table_col));
+        let spec = RowMenu {
+            row,
+            col: table_col.checked_sub(1),
+            deleted: self.table.read(cx).delegate().deleted.contains(&row),
+            mongo: self.conn.kind() == DbKind::Mongo,
+            outgoing: self.outgoing_fks().map(|f| (f.from_columns[0].clone(), f.target_label())).collect(),
+            incoming: self.incoming_fks().map(|f| (f.name.clone(), f.source_label())).collect(),
         };
-        let deleted = self.table.read(cx).delegate().deleted.contains(&row);
-        let mongo = self.conn.kind() == DbKind::Mongo;
-        let act = |label: &'static str, icon: Lucide, f: RowAction| {
-            let view = view.clone();
-            PopupMenuItem::new(label).icon(Icon::new(icon)).on_click(move |_, window, cx| {
-                let f = f.clone();
-                view.update(cx, |this, cx| f(this, window, cx)).ok();
+        let view = cx.entity().downgrade();
+        let position = window.mouse_position();
+        let menu = PopupMenu::build(window, cx, move |m, _, _| spec.build(m, view));
+        menu.focus_handle(cx).focus(window, cx);
+        let sub = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, _, cx| {
+            this.open_menu = None;
+            cx.notify();
+        });
+        self.open_menu = Some((menu, position, sub));
+        cx.notify();
+    }
+
+    // ---- foreign-key navigation ------------------------------------------
+
+    fn outgoing_fks(&self) -> impl Iterator<Item = &ForeignKey> {
+        self.fks.iter().filter(|f| same_object(&f.from, &self.object))
+    }
+
+    fn incoming_fks(&self) -> impl Iterator<Item = &ForeignKey> {
+        self.fks.iter().filter(|f| same_object(&f.to, &self.object))
+    }
+
+    /// Text values of `columns` in `row` (pending edits included).
+    fn row_values(&self, row: usize, columns: &[String], cx: &App) -> Result<Vec<String>, String> {
+        let d = self.table.read(cx).delegate();
+        columns
+            .iter()
+            .map(|name| {
+                let ix = d
+                    .set
+                    .columns
+                    .iter()
+                    .position(|c| &c.name == name)
+                    .ok_or_else(|| format!("column `{name}` is not loaded"))?;
+                match d.cell(row, ix) {
+                    Some(Cell::Value(v, _)) => Ok(v.to_string()),
+                    _ => Err(format!("`{name}` is NULL in this row — nothing to follow")),
+                }
             })
+            .collect()
+    }
+
+    /// Where the foreign key through `column` points for `row`.
+    pub fn reference_target(&self, row: usize, column: &str, cx: &App) -> Result<(ObjectRef, String), String> {
+        let fk = self
+            .outgoing_fks()
+            .find(|f| f.from_columns.iter().any(|c| c == column))
+            .ok_or_else(|| format!("`{column}` is not part of a foreign key"))?;
+        let values = self.row_values(row, &fk.from_columns, cx)?;
+        Ok((fk.to.clone(), eq_filter(&fk.to_columns, &values)))
+    }
+
+    /// Rows of another table that reference `row` through `constraint`.
+    pub fn referencing_target(&self, row: usize, constraint: &str, cx: &App) -> Result<(ObjectRef, String), String> {
+        let fk = self.incoming_fks().find(|f| f.name == constraint).ok_or_else(|| {
+            let names: Vec<String> = self.incoming_fks().map(|f| format!("{} ({})", f.name, f.source_label())).collect();
+            format!("no incoming foreign key `{constraint}`; available: {}", names.join(", "))
+        })?;
+        let values = self.row_values(row, &fk.to_columns, cx)?;
+        Ok((fk.from.clone(), eq_filter(&fk.from_columns, &values)))
+    }
+
+    fn emit_open(&mut self, target: Result<(ObjectRef, String), String>, window: &mut Window, cx: &mut Context<Self>) {
+        match target {
+            Ok((object, filter)) => cx.emit(TableViewEvent::OpenReference {
+                conn_id: self.conn_id.clone(),
+                object,
+                filter,
+            }),
+            Err(e) => window.push_notification(Notification::warning(e), cx),
+        }
+    }
+
+    fn follow_from_cell(&mut self, row: usize, col: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(name) = self.table.read(cx).delegate().column_meta(col).map(|c| c.name.clone()) else {
+            return;
         };
-        let mut menu = menu;
-        if let Some(col) = col {
-            menu = menu
-                .item(act("Edit cell", Lucide::Pencil, Rc::new(move |t, w, cx| t.start_edit(row, col, w, cx))))
-                .item(act("Copy value", Lucide::Copy, Rc::new(move |t, _, cx| {
-                    if let Some(text) = t.table.read(cx).delegate().cell_value_text(row, col) {
-                        cx.write_to_clipboard(ClipboardItem::new_string(text));
-                    }
-                })))
-                .item(act("Filter by this value", Lucide::ListFilter, Rc::new(move |t, w, cx| t.filter_by_cell(row, col, w, cx))))
-                .item(act("Set NULL", Lucide::Ban, Rc::new(move |t, w, cx| t.set_null(row, col, w, cx))));
-            if mongo {
-                menu = menu.item(act("Remove field", Lucide::Eraser, Rc::new(move |t, w, cx| t.unset_field(row, col, w, cx))));
-            }
-            menu = menu.separator();
-        }
-        if mongo {
-            menu = menu.item(act("Edit document…", Lucide::Braces, Rc::new(move |t, w, cx| t.edit_document(row, w, cx))));
-        }
-        menu.item(act("Copy row as JSON", Lucide::Copy, Rc::new(move |t, _, cx| t.copy_row_json(row, cx))))
-            .item(act("Duplicate row…", Lucide::CopyPlus, Rc::new(move |t, w, cx| t.insert(Some(row), w, cx))))
-            .separator()
-            .item(act(
-                if deleted { "Undo delete" } else { "Delete row" },
-                if deleted { Lucide::Undo2 } else { Lucide::Trash },
-                Rc::new(move |t, w, cx| t.toggle_delete(row, w, cx)),
-            ))
+        let target = self.reference_target(row, &name, cx);
+        self.emit_open(target, window, cx);
+    }
+
+    fn open_referencing(&mut self, row: usize, constraint: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let target = self.referencing_target(row, constraint, cx);
+        self.emit_open(target, window, cx);
     }
 
     fn go_to_page(&mut self, page: u64, cx: &mut Context<Self>) {
@@ -943,6 +1032,113 @@ impl TableView {
     }
 }
 
+/// Owned snapshot of what a row's context menu needs.
+struct RowMenu {
+    row: usize,
+    col: Option<usize>,
+    deleted: bool,
+    mongo: bool,
+    outgoing: Vec<(String, String)>,
+    incoming: Vec<(String, String)>,
+}
+
+impl RowMenu {
+    fn build(self, menu: PopupMenu, view: WeakEntity<TableView>) -> PopupMenu {
+        let RowMenu { row, col, deleted, mongo, outgoing, incoming } = self;
+        let act = |label: &str, icon: Lucide, f: RowAction| act_owned(label.to_string(), icon, view.clone(), f);
+        let mut menu = menu;
+        if let Some(col) = col {
+            menu = menu
+                .item(act("Edit cell", Lucide::Pencil, Rc::new(move |t, w, cx| t.start_edit(row, col, w, cx))))
+                .item(act("Copy value", Lucide::Copy, Rc::new(move |t, _, cx| {
+                    if let Some(text) = t.table.read(cx).delegate().cell_value_text(row, col) {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    }
+                })))
+                .item(act("Filter by this value", Lucide::ListFilter, Rc::new(move |t, w, cx| t.filter_by_cell(row, col, w, cx))))
+                .item(act("Set NULL", Lucide::Ban, Rc::new(move |t, w, cx| t.set_null(row, col, w, cx))));
+            if mongo {
+                menu = menu.item(act("Remove field", Lucide::Eraser, Rc::new(move |t, w, cx| t.unset_field(row, col, w, cx))));
+            }
+            menu = menu.separator();
+        }
+        if mongo {
+            menu = menu.item(act("Edit document…", Lucide::Braces, Rc::new(move |t, w, cx| t.edit_document(row, w, cx))));
+        }
+        let has_refs = !outgoing.is_empty() || !incoming.is_empty();
+        for (column, label) in outgoing {
+            menu = menu.item(act(
+                &format!("Go to {label}"),
+                Lucide::ArrowUpRight,
+                Rc::new(move |t, w, cx| {
+                    let target = t.reference_target(row, &column, cx);
+                    t.emit_open(target, w, cx);
+                }),
+            ));
+        }
+        if !incoming.is_empty() {
+            menu = menu.label("Referenced by");
+            for (constraint, label) in incoming {
+                menu = menu.item(act(
+                    &format!("Rows in {label}"),
+                    Lucide::ArrowDownLeft,
+                    Rc::new(move |t, w, cx| t.open_referencing(row, &constraint, w, cx)),
+                ));
+            }
+        }
+        if has_refs {
+            menu = menu.separator();
+        }
+        menu.item(act("Copy row as JSON", Lucide::Copy, Rc::new(move |t, _, cx| t.copy_row_json(row, cx))))
+            .item(act("Duplicate row…", Lucide::CopyPlus, Rc::new(move |t, w, cx| t.insert(Some(row), w, cx))))
+            .separator()
+            .item(act(
+                if deleted { "Undo delete" } else { "Delete row" },
+                if deleted { Lucide::Undo2 } else { Lucide::Trash },
+                Rc::new(move |t, w, cx| t.toggle_delete(row, w, cx)),
+            ))
+    }
+}
+
+fn same_object(a: &ObjectRef, b: &ObjectRef) -> bool {
+    a.database == b.database && a.schema == b.schema && a.name == b.name
+}
+
+/// Mark columns that are part of an outgoing foreign key.
+fn annotate_references(columns: &mut [ColumnMeta], fks: &[ForeignKey], object: &ObjectRef) {
+    for fk in fks.iter().filter(|f| same_object(&f.from, object)) {
+        for name in &fk.from_columns {
+            if let Some(c) = columns.iter_mut().find(|c| &c.name == name) {
+                c.references = Some(fk.target_label());
+            }
+        }
+    }
+}
+
+/// `a = "1" and b = "x"` in the filter language.
+fn eq_filter(columns: &[String], values: &[String]) -> String {
+    columns
+        .iter()
+        .zip(values)
+        .map(|(c, v)| {
+            let ident = if c.chars().all(|ch| ch.is_alphanumeric() || ch == '_') {
+                c.clone()
+            } else {
+                format!("`{}`", c.replace('`', ""))
+            };
+            format!("{ident} = {}", quote_str(v))
+        })
+        .collect::<Vec<_>>()
+        .join(" and ")
+}
+
+fn act_owned(label: String, icon: Lucide, view: WeakEntity<TableView>, f: RowAction) -> PopupMenuItem {
+    PopupMenuItem::new(label).icon(Icon::new(icon)).on_click(move |_, window, cx| {
+        let f = f.clone();
+        view.update(cx, |this, cx| f(this, window, cx)).ok();
+    })
+}
+
 /// An example filter built from the table's own columns.
 fn filter_placeholder(columns: &[ColumnMeta]) -> SharedString {
     use dbclaw_core::model::ValueKind;
@@ -961,9 +1157,9 @@ fn filter_placeholder(columns: &[ColumnMeta]) -> SharedString {
             parts.push(format!("{} is not null", c.name));
         }
     if parts.is_empty() {
-        "Filter…  (? for syntax)".into()
+        "Filter…".into()
     } else {
-        format!("Filter, e.g. {}   (? for syntax)", parts.join(" and ")).into()
+        format!("Filter, e.g. {}", parts.join(" and ")).into()
     }
 }
 
@@ -1242,6 +1438,17 @@ impl Render for TableView {
             .children(filter_error)
             .child(body)
             .child(footer)
+            .when_some(self.open_menu.as_ref(), |this, (menu, position, _)| {
+                this.child(
+                    deferred(
+                        anchored()
+                            .position(*position)
+                            .snap_to_window_with_margin(px(8.))
+                            .child(menu.clone()),
+                    )
+                    .with_priority(1),
+                )
+            })
     }
 }
 
@@ -1259,6 +1466,26 @@ impl TableView {
 
     pub fn filter_error(&self) -> Option<SharedString> {
         self.filter_error.clone()
+    }
+
+    pub fn filter_text(&self, cx: &App) -> String {
+        self.filter_input.read(cx).value().to_string()
+    }
+
+    pub fn page(&self) -> u64 {
+        self.page
+    }
+
+    /// Restore a filter + page in one reload (navigation history).
+    pub fn restore_view(&mut self, filter_text: &str, page: u64, window: &mut Window, cx: &mut Context<Self>) {
+        if self.filter_text(cx) == filter_text && self.page == page {
+            return;
+        }
+        self.filter_input.update(cx, |s, cx| s.set_value(filter_text.to_string(), window, cx));
+        self.filter_error = None;
+        self.filter = filter::parse(filter_text).ok().flatten();
+        self.page = page;
+        self.reload(true, cx);
     }
 
     pub fn set_filter_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -1442,6 +1669,18 @@ impl TableView {
             "pending_changes": d.change_count(),
             "last_save": self.last_save.as_ref().map(|(_, r)| match r { Ok(s) => json!({"ok": s}), Err(e) => json!({"error": e}) }),
         });
+        tab["foreign_keys"] = json!(self
+            .fks
+            .iter()
+            .map(|f| json!({
+                "constraint": f.name,
+                "direction": if same_object(&f.from, &self.object) { "outgoing" } else { "incoming" },
+                "from": f.from.display_name(),
+                "from_columns": f.from_columns,
+                "to": f.to.display_name(),
+                "to_columns": f.to_columns,
+            }))
+            .collect::<Vec<_>>());
         tab["grid"] = grid_json(d, offset, limit);
         tab
     }
@@ -1454,7 +1693,7 @@ pub fn grid_json(d: &GridDelegate, offset: usize, limit: usize) -> serde_json::V
         .set
         .columns
         .iter()
-        .map(|c| json!({"name": c.name, "type": c.type_name, "pk": c.is_pk}))
+        .map(|c| json!({"name": c.name, "type": c.type_name, "pk": c.is_pk, "references": c.references}))
         .collect();
     let end = (offset + limit).min(d.set.rows.len());
     let rows: Vec<serde_json::Value> = (offset.min(end)..end)

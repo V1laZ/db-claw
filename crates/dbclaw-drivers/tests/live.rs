@@ -118,6 +118,28 @@ async fn postgres_browse_filter_edit() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn postgres_foreign_keys() {
+    if !live() {
+        return;
+    }
+    let conn = Connection::open(pg_config()).await.unwrap();
+    let objs = conn.list_objects("shop").await.unwrap();
+    let orders = find(&objs, "public", "orders").clone();
+    let fks = conn.foreign_keys(&orders).await.unwrap();
+    // Outgoing: orders.customer_id → customers.id
+    let out = fks.iter().find(|f| f.from.name == "orders").unwrap();
+    assert_eq!(out.from_columns, vec!["customer_id"]);
+    assert_eq!((out.to.name.as_str(), out.to_columns.clone()), ("customers", vec!["id".to_string()]));
+    // Incoming: order_items.order_id → orders.id
+    let inc = fks.iter().find(|f| f.from.name == "order_items").unwrap();
+    assert_eq!(inc.to.name, "orders");
+    assert_eq!(inc.from_columns, vec!["order_id"]);
+    // A table without keys.
+    let audit = find(&objs, "public", "audit_log").clone();
+    assert!(conn.foreign_keys(&audit).await.unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn postgres_console() {
     if !live() {
         return;

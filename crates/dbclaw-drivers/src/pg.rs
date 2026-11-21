@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result, anyhow, bail};
 use dbclaw_core::filter::{self, SqlColumn};
 use dbclaw_core::model::{
-    ApplySummary, Cell, ColumnMeta, ConnectionConfig, NewValue, ObjectInfo, ObjectKind, ObjectRef,
+    ApplySummary, Cell, ColumnMeta, ConnectionConfig, ForeignKey, NewValue, ObjectInfo, ObjectKind, ObjectRef,
     PageRequest, QueryOutput, ResultSet, RowChange, ValueKind,
 };
 use dbclaw_core::sql::{self, quote_literal};
@@ -207,8 +207,57 @@ impl PgConnection {
                     default: r.get(5).map(str::to_string),
                     generated: r.get(6) == Some("t"),
                     is_pk: r.get(7) == Some("t"),
+                    references: None,
                 }
             })
+            .collect())
+    }
+
+    /// Foreign keys from this table (outgoing) and to it (incoming).
+    pub async fn foreign_keys(&self, object: &ObjectRef) -> Result<Vec<ForeignKey>> {
+        let c = self.browse_client(&object.database).await?;
+        let regclass = quote_literal(&sql::qualified_name(object))?;
+        // Column lists as JSON arrays, in key order (composite keys).
+        let cols = |rel: &str, keys: &str| {
+            format!(
+                "(SELECT json_agg(a.attname ORDER BY k.ord) FROM unnest(c.{keys}) WITH ORDINALITY k(attnum, ord) \
+                 JOIN pg_attribute a ON a.attrelid = c.{rel} AND a.attnum = k.attnum)"
+            )
+        };
+        let query = format!(
+            "SELECT c.conname, sn.nspname, s.relname, s.relkind, {}, tn.nspname, t.relname, t.relkind, {} \
+             FROM pg_constraint c \
+             JOIN pg_class s ON s.oid = c.conrelid JOIN pg_namespace sn ON sn.oid = s.relnamespace \
+             JOIN pg_class t ON t.oid = c.confrelid JOIN pg_namespace tn ON tn.oid = t.relnamespace \
+             WHERE c.contype = 'f' AND (c.conrelid = {regclass}::regclass OR c.confrelid = {regclass}::regclass) \
+             ORDER BY s.relname, c.conname",
+            cols("conrelid", "conkey"),
+            cols("confrelid", "confkey"),
+        );
+        let rows = simple_rows(&c.client, &query).await?;
+        let obj = |schema: Option<&str>, name: Option<&str>, kind: Option<&str>| ObjectRef {
+            database: object.database.clone(),
+            schema: schema.unwrap_or_default().to_string(),
+            name: name.unwrap_or_default().to_string(),
+            kind: match kind {
+                Some("p") => ObjectKind::PartitionedTable,
+                Some("f") => ObjectKind::ForeignTable,
+                _ => ObjectKind::Table,
+            },
+        };
+        let names = |json: Option<&str>| -> Vec<String> {
+            json.and_then(|j| serde_json::from_str(j).ok()).unwrap_or_default()
+        };
+        Ok(rows
+            .iter()
+            .map(|r| ForeignKey {
+                name: r.get(0).unwrap_or_default().to_string(),
+                from: obj(r.get(1), r.get(2), r.get(3)),
+                from_columns: names(r.get(4)),
+                to: obj(r.get(5), r.get(6), r.get(7)),
+                to_columns: names(r.get(8)),
+            })
+            .filter(|fk| !fk.from_columns.is_empty() && fk.from_columns.len() == fk.to_columns.len())
             .collect())
     }
 

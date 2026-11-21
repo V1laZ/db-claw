@@ -11,6 +11,8 @@ gpui_kit::actions!(
         PrevTab,
         ToggleSidebar,
         SearchTables,
+        GoBack,
+        GoForward,
         // Table view
         SaveChanges,
         Refresh,

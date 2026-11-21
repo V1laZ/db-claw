@@ -6,7 +6,8 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, Sizable as _, StyledExt as _, WindowExt as _, h_flex, h_resizable,
+    ActiveTheme as _, Disableable as _, Icon, Sizable as _, StyledExt as _, WindowExt as _, h_flex,
+    h_resizable,
     resizable_panel, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
@@ -17,7 +18,13 @@ use crate::connection_dialog;
 use crate::console::ConsoleView;
 use crate::navigator::{NavEvent, Navigator};
 use crate::state::{AppEvent, AppState};
-use crate::table_view::TableView;
+use crate::table_view::{TableSource, TableView, TableViewEvent};
+
+/// Same table, ignoring the object kind (FK targets don't know if a table
+/// is partitioned the way the navigator does).
+fn same_table(a: &ObjectRef, b: &ObjectRef) -> bool {
+    a.database == b.database && a.schema == b.schema && a.name == b.name
+}
 
 #[derive(Clone)]
 pub enum Tab {
@@ -41,12 +48,25 @@ impl Tab {
     }
 }
 
+/// A place to go back/forward to: a data tab with its filter and page.
+#[derive(Clone)]
+struct Location {
+    tab: EntityId,
+    filter: String,
+    page: u64,
+    label: SharedString,
+}
+
+const HISTORY_LIMIT: usize = 100;
+
 pub struct Workspace {
     state: Entity<AppState>,
     navigator: Entity<Navigator>,
     tabs: Vec<Tab>,
     active: usize,
     sidebar: bool,
+    back: Vec<Location>,
+    forward: Vec<Location>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -84,6 +104,8 @@ impl Workspace {
             tabs: Vec::new(),
             active: 0,
             sidebar: true,
+            back: Vec::new(),
+            forward: Vec::new(),
             focus,
             _subs: subs,
         }
@@ -91,7 +113,7 @@ impl Workspace {
 
     fn on_nav_event(&mut self, _: &Entity<Navigator>, ev: &NavEvent, window: &mut Window, cx: &mut Context<Self>) {
         match ev {
-            NavEvent::OpenObject { conn_id, object } => self.open_object(conn_id, object, window, cx),
+            NavEvent::OpenObject { conn_id, object } => self.open_object(conn_id, object, None, window, cx),
             NavEvent::OpenConsole { conn_id, database, collection } => {
                 self.open_console(conn_id, database.clone(), collection.clone(), window, cx)
             }
@@ -129,14 +151,26 @@ impl Workspace {
         });
     }
 
-    pub fn open_object(&mut self, conn_id: &str, object: &ObjectRef, window: &mut Window, cx: &mut Context<Self>) {
+    /// Open (or switch to) the tab of a table. With `filter`, the tab shows
+    /// only matching rows (used when following foreign keys).
+    pub fn open_object(
+        &mut self,
+        conn_id: &str,
+        object: &ObjectRef,
+        filter: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(ix) = self.tabs.iter().position(|t| match t {
             Tab::Table(t) => {
                 let t = t.read(cx);
-                t.conn_id == conn_id && t.object == *object
+                t.conn_id == conn_id && same_table(&t.object, object)
             }
             _ => false,
         }) {
+            if let (Some(filter), Tab::Table(t)) = (filter, &self.tabs[ix]) {
+                t.update(cx, |t, cx| t.set_filter_text(&filter, window, cx));
+            }
             self.activate(ix, window, cx);
             return;
         }
@@ -145,7 +179,14 @@ impl Workspace {
         let Some(config) = state.config(conn_id) else { return };
         let (name, read_only) = (SharedString::from(config.name.clone()), config.read_only);
         let (conn_id, object) = (conn_id.to_string(), object.clone());
-        let view = cx.new(|cx| TableView::new(conn_id, name, conn, object, read_only, window, cx));
+        let source = TableSource { conn_id, conn_name: name, conn, read_only };
+        let view = cx.new(|cx| TableView::new(source, object, filter, window, cx));
+        let sub = cx.subscribe_in(&view, window, |this, from, ev: &TableViewEvent, window, cx| match ev {
+            TableViewEvent::OpenReference { conn_id, object, filter } => {
+                this.follow_reference(from, conn_id, object, filter.clone(), window, cx)
+            }
+        });
+        self._subs.push(sub);
         let ix = (self.active + 1).min(self.tabs.len());
         self.tabs.insert(ix, Tab::Table(view));
         self.activate(ix, window, cx);
@@ -287,6 +328,7 @@ impl Workspace {
             .border_b_1()
             .border_color(theme.border)
             .overflow_x_scroll()
+            .child(self.render_history_buttons(cx))
             .children(self.tabs.iter().enumerate().map(|(ix, tab)| {
                 let active = ix == self.active;
                 let (icon, title, dirty, running, sub) = match tab {
@@ -403,6 +445,125 @@ impl Workspace {
     }
 }
 
+// ---- navigation history (foreign keys) ------------------------------------
+
+impl Workspace {
+    fn location_of(view: &Entity<TableView>, cx: &App) -> Location {
+        let t = view.read(cx);
+        let filter = t.filter_text(cx);
+        let label = if filter.trim().is_empty() {
+            format!("{} (all rows)", t.title())
+        } else {
+            format!("{} · {}", t.title(), filter.trim())
+        };
+        Location { tab: view.entity_id(), filter, page: t.page(), label: label.into() }
+    }
+
+    fn active_location(&self, cx: &App) -> Option<Location> {
+        match self.tabs.get(self.active) {
+            Some(Tab::Table(t)) => Some(Self::location_of(t, cx)),
+            _ => None,
+        }
+    }
+
+    /// Follow a foreign key from `from`, remembering where we came from.
+    pub fn follow_reference(
+        &mut self,
+        from: &Entity<TableView>,
+        conn_id: &str,
+        object: &ObjectRef,
+        filter: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.back.push(Self::location_of(from, cx));
+        if self.back.len() > HISTORY_LIMIT {
+            self.back.remove(0);
+        }
+        self.forward.clear();
+        self.open_object(conn_id, object, Some(filter), window, cx);
+    }
+
+    /// Go to a location; false when its tab has been closed.
+    fn restore(&mut self, loc: &Location, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(ix) = self.tabs.iter().position(|t| t.entity_id() == loc.tab) else {
+            return false;
+        };
+        if let Tab::Table(t) = &self.tabs[ix] {
+            t.update(cx, |t, cx| t.restore_view(&loc.filter, loc.page, window, cx));
+        }
+        self.activate(ix, window, cx);
+        true
+    }
+
+    pub fn go_back(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        while let Some(loc) = self.back.pop() {
+            let current = self.active_location(cx);
+            if self.restore(&loc, window, cx) {
+                if let Some(current) = current {
+                    self.forward.push(current);
+                }
+                cx.notify();
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn go_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        while let Some(loc) = self.forward.pop() {
+            let current = self.active_location(cx);
+            if self.restore(&loc, window, cx) {
+                if let Some(current) = current {
+                    self.back.push(current);
+                }
+                cx.notify();
+                return true;
+            }
+        }
+        false
+    }
+
+    fn render_history_buttons(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let back = self.back.last().map(|l| l.label.clone());
+        let forward = self.forward.last().map(|l| l.label.clone());
+        h_flex()
+            .px_1()
+            .gap_0p5()
+            .border_r_1()
+            .border_color(cx.theme().border)
+            .h_full()
+            .child(
+                Button::new("nav-back")
+                    .ghost()
+                    .xsmall()
+                    .icon(Icon::new(Lucide::ArrowLeft))
+                    .disabled(back.is_none())
+                    .tooltip(match &back {
+                        Some(l) => SharedString::from(format!("Back to {l} (⌥←)")),
+                        None => "Back (⌥←)".into(),
+                    })
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.go_back(window, cx);
+                    })),
+            )
+            .child(
+                Button::new("nav-forward")
+                    .ghost()
+                    .xsmall()
+                    .icon(Icon::new(Lucide::ArrowRight))
+                    .disabled(forward.is_none())
+                    .tooltip(match &forward {
+                        Some(l) => SharedString::from(format!("Forward to {l} (⌥→)")),
+                        None => "Forward (⌥→)".into(),
+                    })
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.go_forward(window, cx);
+                    })),
+            )
+    }
+}
+
 // ---- automation API ----------------------------------------------------------
 
 impl Workspace {
@@ -428,7 +589,7 @@ impl Workspace {
 
     pub fn find_table(&self, conn_id: &str, object: &ObjectRef, cx: &App) -> Option<Entity<TableView>> {
         self.tabs.iter().find_map(|t| match t {
-            Tab::Table(v) if v.read(cx).conn_id == conn_id && v.read(cx).object == *object => Some(v.clone()),
+            Tab::Table(v) if v.read(cx).conn_id == conn_id && same_table(&v.read(cx).object, object) => Some(v.clone()),
             _ => None,
         })
     }
@@ -481,6 +642,12 @@ impl Render for Workspace {
                     let ix = (this.active + this.tabs.len() - 1) % this.tabs.len();
                     this.activate(ix, window, cx);
                 }
+            }))
+            .on_action(cx.listener(|this, _: &GoBack, window, cx| {
+                this.go_back(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &GoForward, window, cx| {
+                this.go_forward(window, cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
                 this.sidebar = !this.sidebar;

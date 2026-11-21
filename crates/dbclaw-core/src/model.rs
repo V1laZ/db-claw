@@ -220,6 +220,30 @@ pub struct ColumnMeta {
     pub default: Option<String>,
     /// Identity / generated columns can't be written directly.
     pub generated: bool,
+    /// Referenced table when this column is part of a foreign key, e.g.
+    /// `customers(id)`.
+    pub references: Option<String>,
+}
+
+/// A foreign key: `from_columns` of `from` reference `to_columns` of `to`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ForeignKey {
+    pub name: String,
+    pub from: ObjectRef,
+    pub from_columns: Vec<String>,
+    pub to: ObjectRef,
+    pub to_columns: Vec<String>,
+}
+
+impl ForeignKey {
+    /// `customers(id)` / `analytics.events(a, b)`
+    pub fn target_label(&self) -> String {
+        format!("{}({})", self.to.display_name(), self.to_columns.join(", "))
+    }
+
+    pub fn source_label(&self) -> String {
+        format!("{}({})", self.from.display_name(), self.from_columns.join(", "))
+    }
 }
 
 /// One grid cell. Values are pre-rendered to text on the background thread so

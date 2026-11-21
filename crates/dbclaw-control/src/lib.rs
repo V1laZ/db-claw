@@ -268,6 +268,27 @@ pub static METHODS: &[MethodSpec] = &[
         params: &[TAB, ("row", "integer", "Row index on the current page", true), ("document", "string", "New document", true)],
     },
     MethodSpec {
+        name: "follow_reference",
+        description: "Postgres foreign keys: open the row referenced by `column` of `row` (outgoing), or the rows of another table that reference this row via an incoming `constraint` (names are listed in the tab's `foreign_keys`). Opens or reuses that table's tab, filtered, and waits for it.",
+        params: &[
+            TAB,
+            ("row", "integer", "Row index on the current page", true),
+            ("column", "string", "Foreign-key column to follow (outgoing)", false),
+            ("constraint", "string", "Incoming foreign-key constraint name (referencing rows)", false),
+            ("rows", "integer", "Rows to include in the reply (default 20)", false),
+        ],
+    },
+    MethodSpec {
+        name: "back",
+        description: "Go back to where you were before the last follow_reference (tab, filter and page), like a browser. Waits for the data.",
+        params: &[("rows", "integer", "Rows to include in the reply (default 20)", false)],
+    },
+    MethodSpec {
+        name: "forward",
+        description: "Undo `back`.",
+        params: &[("rows", "integer", "Rows to include in the reply (default 20)", false)],
+    },
+    MethodSpec {
         name: "open_console",
         description: "Open a query console tab (SQL for Postgres, mongosh syntax for Mongo). Returns the tab.",
         params: &[

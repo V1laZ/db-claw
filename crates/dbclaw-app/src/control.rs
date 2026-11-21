@@ -477,6 +477,44 @@ impl Ctx {
                     .map_err(|e| anyhow!(e))?;
                 self.wait_save(cx, &t, seq).await
             }
+            "follow_reference" => {
+                let t = self.table(cx, &params)?;
+                self.wait_table(cx, &t).await?;
+                let row = p_u64(&params, "row").ok_or_else(|| anyhow!("missing `row`"))? as usize;
+                let column = p_str(&params, "column").map(str::to_string);
+                let constraint = p_str(&params, "constraint").map(str::to_string);
+                let target = cx.update(|_, cx| {
+                    let v = t.read(cx);
+                    match (&column, &constraint) {
+                        (Some(c), _) => v.reference_target(row, c, cx),
+                        (None, Some(k)) => v.referencing_target(row, k, cx),
+                        (None, None) => Err("pass `column` (outgoing) or `constraint` (incoming)".into()),
+                    }
+                })?
+                .map_err(|e| anyhow!(e))?;
+                let (object, filter) = target;
+                let conn_id = cx.update(|_, cx| t.read(cx).conn_id.clone())?;
+                let source = t.clone();
+                let target_tab = self
+                    .ws(cx, |ws, window, cx| {
+                        ws.follow_reference(&source, &conn_id, &object, filter.clone(), window, cx);
+                        ws.find_table(&conn_id, &object, cx)
+                    })?
+                    .ok_or_else(|| anyhow!("could not open {}", object.display_name()))?;
+                self.wait_table(cx, &target_tab).await?;
+                self.table_json(cx, &target_tab, p_u64(&params, "rows").unwrap_or(20) as usize)
+            }
+            "back" | "forward" => {
+                let moved = self.ws(cx, |ws, window, cx| {
+                    if method == "back" { ws.go_back(window, cx) } else { ws.go_forward(window, cx) }
+                })?;
+                if !moved {
+                    bail!("nothing to go {method} to");
+                }
+                let t = self.table(cx, &json!({}))?;
+                self.wait_table(cx, &t).await?;
+                self.table_json(cx, &t, p_u64(&params, "rows").unwrap_or(20) as usize)
+            }
             "open_console" => {
                 let (config, conn) = self.live(cx, req_str(&params, "connection")?).await?;
                 let c = self.open_console(cx, &config, &conn, &params)?;
@@ -562,11 +600,17 @@ impl Ctx {
                 };
                 let count = p_u64(&params, "count").unwrap_or(1).clamp(1, 3) as usize;
                 let position = point(px(x as f32), px(y as f32));
+                // Move first and let a couple of frames render: hover state
+                // (which e.g. context menus check) comes from the last frame.
                 cx.update(|window, cx| {
                     window.dispatch_event(
                         PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: None, modifiers: Modifiers::default() }),
                         cx,
                     );
+                    window.refresh();
+                })?;
+                cx.background_executor().timer(Duration::from_millis(40)).await;
+                cx.update(|window, cx| {
                     for n in 1..=count {
                         window.dispatch_event(
                             PlatformInput::MouseDown(MouseDownEvent { button, position, modifiers: Modifiers::default(), click_count: n, first_mouse: false }),
@@ -692,7 +736,7 @@ impl Ctx {
         let object = info.object.clone();
         let conn_id = config.id.clone();
         let t = self.ws(cx, |ws, window, cx| {
-            ws.open_object(&conn_id, &object, window, cx);
+            ws.open_object(&conn_id, &object, None, window, cx);
             ws.find_table(&conn_id, &object, cx)
         })?
         .ok_or_else(|| anyhow!("could not open the tab"))?;

@@ -12,6 +12,7 @@ use dbclaw_core::model::{Cell, ColumnMeta, NewValue, ResultSet, ValueKind};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableState};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -21,15 +22,8 @@ use crate::util::single_line;
 /// Max characters drawn per cell (the full value stays in memory).
 const CELL_DISPLAY_CHARS: usize = 300;
 
+pub type FollowHandler = Rc<dyn Fn(usize, usize, &mut Window, &mut App)>;
 pub type SortHandler = Rc<dyn Fn(Option<(String, ColumnSort)>, &mut Window, &mut App)>;
-pub type MenuBuilder = Rc<
-    dyn Fn(
-        usize,
-        gpui_kit::component::menu::PopupMenu,
-        &mut Window,
-        &mut App,
-    ) -> gpui_kit::component::menu::PopupMenu,
->;
 
 #[derive(Clone, Debug)]
 pub struct PendingCell {
@@ -52,7 +46,8 @@ pub struct GridDelegate {
     /// When set, sorting is done by the owner (server side); otherwise rows
     /// are sorted locally.
     pub on_sort: Option<SortHandler>,
-    pub context_menu: Option<MenuBuilder>,
+    /// Follow the foreign key of a cell: (row, data column).
+    pub on_follow: Option<FollowHandler>,
     pub edits: HashMap<(usize, usize), PendingCell>,
     pub deleted: BTreeSet<usize>,
     pub editor: Option<CellEditor>,
@@ -67,7 +62,7 @@ impl GridDelegate {
             row_offset: 0,
             sort: None,
             on_sort: None,
-            context_menu: None,
+            on_follow: None,
             edits: HashMap::new(),
             deleted: BTreeSet::new(),
             editor: None,
@@ -247,6 +242,16 @@ impl TableDelegate for GridDelegate {
                     Icon::new(Lucide::KeyRound).xsmall().text_color(cx.theme().warning),
                 )
             })
+            .when_some(meta.references.clone(), |this, target| {
+                this.child(
+                    div()
+                        .id(("fk-head", col_ix))
+                        .child(Icon::new(Lucide::Link).xsmall().text_color(cx.theme().link))
+                        .tooltip(move |window, cx| {
+                            Tooltip::new(format!("References {target}")).build(window, cx)
+                        }),
+                )
+            })
             .child(div().font_semibold().truncate().child(meta.name.clone()))
             .when(!meta.type_name.is_empty(), |this| {
                 this.child(
@@ -288,19 +293,6 @@ impl TableDelegate for GridDelegate {
         }
     }
 
-    fn context_menu(
-        &mut self,
-        row_ix: usize,
-        menu: gpui_kit::component::menu::PopupMenu,
-        window: &mut Window,
-        cx: &mut Context<TableState<Self>>,
-    ) -> gpui_kit::component::menu::PopupMenu {
-        match self.context_menu.clone() {
-            Some(builder) => builder(row_ix, menu, window, cx),
-            None => menu,
-        }
-    }
-
     fn render_td(
         &mut self,
         row_ix: usize,
@@ -329,6 +321,10 @@ impl TableDelegate for GridDelegate {
             }
         let pending = self.edits.contains_key(&(row_ix, data_col));
         let cell = self.cell(row_ix, data_col).cloned().unwrap_or(Cell::Missing);
+        let follow = self
+            .on_follow
+            .clone()
+            .filter(|_| self.set.columns.get(data_col).is_some_and(|m| m.references.is_some()));
         let base = div()
             .w_full()
             .h_full()
@@ -353,9 +349,40 @@ impl TableDelegate for GridDelegate {
                     ValueKind::Uuid => Some(theme.cyan),
                     _ => None,
                 };
-                base.when(kind.is_right_aligned(), |this| this.justify_end())
-                    .when_some(color, |this, c| this.text_color(c))
-                    .child(SharedString::from(single_line(&text, CELL_DISPLAY_CHARS)))
+                let text = SharedString::from(single_line(&text, CELL_DISPLAY_CHARS));
+                match follow {
+                    // Foreign key: a link arrow on the left opens the referenced row.
+                    Some(follow) => base
+                        .gap_1()
+                        .when_some(color, |this, c| this.text_color(c))
+                        .child(
+                            div()
+                                .id(("fk-link", row_ix * 4096 + data_col))
+                                .flex_shrink_0()
+                                .cursor_pointer()
+                                .rounded_sm()
+                                .text_color(theme.link)
+                                .hover(|s| s.bg(theme.link.opacity(0.15)))
+                                .child(Icon::new(Lucide::ArrowUpRight).xsmall())
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .on_click(move |_, window, cx| {
+                                    cx.stop_propagation();
+                                    follow(row_ix, data_col, window, cx);
+                                }),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .when(kind.is_right_aligned(), |this| this.text_right())
+                                .child(text),
+                        ),
+                    None => base
+                        .when(kind.is_right_aligned(), |this| this.justify_end())
+                        .when_some(color, |this, c| this.text_color(c))
+                        .child(text),
+                }
             }
         };
         el.into_any_element()

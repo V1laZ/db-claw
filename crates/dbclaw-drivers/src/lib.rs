@@ -13,7 +13,7 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::Result;
 use dbclaw_core::model::{
-    ApplySummary, ColumnMeta, ConnectionConfig, DbKind, ObjectInfo, ObjectRef, PageRequest,
+    ApplySummary, ColumnMeta, ConnectionConfig, DbKind, ForeignKey, ObjectInfo, ObjectRef, PageRequest,
     QueryOutput, ResultSet, RowChange,
 };
 
@@ -102,6 +102,14 @@ impl Connection {
     pub async fn columns(&self, object: &ObjectRef) -> Result<Vec<ColumnMeta>> {
         match self {
             Connection::Pg(c) => c.columns(object).await,
+            Connection::Mongo(_) => Ok(Vec::new()),
+        }
+    }
+
+    /// Foreign keys from and to a table (Postgres; empty for Mongo).
+    pub async fn foreign_keys(&self, object: &ObjectRef) -> Result<Vec<ForeignKey>> {
+        match self {
+            Connection::Pg(c) => c.foreign_keys(object).await,
             Connection::Mongo(_) => Ok(Vec::new()),
         }
     }
