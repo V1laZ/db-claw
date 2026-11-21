@@ -233,6 +233,8 @@ pub struct ForeignKey {
     pub from_columns: Vec<String>,
     pub to: ObjectRef,
     pub to_columns: Vec<String>,
+    /// Guessed (MongoDB) rather than declared by the database.
+    pub inferred: bool,
 }
 
 impl ForeignKey {

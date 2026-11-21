@@ -53,6 +53,8 @@ pub struct GridDelegate {
     pub editor: Option<CellEditor>,
     pub loading: bool,
     widths: Vec<Pixels>,
+    /// Columns already widened for their reference arrow.
+    widened: BTreeSet<usize>,
 }
 
 impl GridDelegate {
@@ -68,6 +70,7 @@ impl GridDelegate {
             editor: None,
             loading: false,
             widths: Vec::new(),
+            widened: BTreeSet::new(),
         }
     }
 
@@ -82,6 +85,18 @@ impl GridDelegate {
         self.editor = None;
         if !same_columns || self.widths.len() != self.set.columns.len() {
             self.widths = compute_widths(&self.set);
+            self.widened.clear();
+        }
+    }
+
+    /// Make room for the arrow in reference columns (once per column, so
+    /// manual resizing isn't undone on the next page).
+    pub fn widen_reference_columns(&mut self) {
+        for (i, c) in self.set.columns.iter().enumerate() {
+            if c.references.is_some() && self.widened.insert(i)
+                && let Some(w) = self.widths.get_mut(i) {
+                    *w = (*w + px(20.)).min(px(440.));
+                }
         }
     }
 

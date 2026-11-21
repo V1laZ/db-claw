@@ -205,6 +205,18 @@ async fn mongo_browse_filter_edit_console() {
     assert_eq!(page.columns[0].name, "_id");
     assert!(conn.count(&req, &[]).await.unwrap() > 20);
 
+    // Inferred references: orders.userId → users (outgoing from orders,
+    // incoming to users); products has none.
+    let orders = find(&objs, "", "orders").clone();
+    let refs = conn.foreign_keys(&orders).await.unwrap();
+    let r = refs.iter().find(|f| f.from.name == "orders").expect("orders.userId inferred");
+    assert_eq!((r.from_columns[0].as_str(), r.to.name.as_str()), ("userId", "users"));
+    assert!(r.inferred);
+    let incoming = conn.foreign_keys(&users).await.unwrap();
+    assert!(incoming.iter().any(|f| f.from.name == "orders" && f.to.name == "users"), "{incoming:?}");
+    let products = find(&objs, "", "products").clone();
+    assert!(conn.foreign_keys(&products).await.unwrap().is_empty());
+
     let session = conn.open_session("shop").await.unwrap();
     let out = session
         .execute("db.users.insertOne({email: 'live@x.cz', age: NumberInt(5), tags: []})", 10, None)

@@ -8,9 +8,10 @@ use anyhow::{Result, anyhow, bail};
 use bson::{Bson, Document, doc};
 use dbclaw_core::filter;
 use dbclaw_core::model::{
-    ApplySummary, Cell, ColumnMeta, ConnectionConfig, NewValue, ObjectInfo, ObjectKind, ObjectRef,
+    ApplySummary, Cell, ColumnMeta, ConnectionConfig, ForeignKey, NewValue, ObjectInfo, ObjectKind, ObjectRef,
     PageRequest, QueryOutput, ResultSet, RowChange, RowKey, SortDir, ValueKind,
 };
+use dbclaw_core::mongo_refs;
 use dbclaw_core::mongo_shell::{self, MongoCommand, UpdateSpec};
 use futures_util::TryStreamExt as _;
 use mongodb::options::ClientOptions;
@@ -225,6 +226,103 @@ impl MongoConnection {
             }
         }
         Ok(summary)
+    }
+
+    /// Infer references from and to a collection (MongoDB has no foreign
+    /// keys). A guess counts only once a sampled id is found as an `_id` in
+    /// the target collection — ObjectIds are globally unique.
+    pub async fn guess_references(&self, object: &ObjectRef) -> Result<Vec<ForeignKey>> {
+        const SAMPLE: i64 = 20;
+        const MAX_PROBE: usize = 30;
+        const MAX_FIELDS: usize = 12;
+        let db = self.client.database(&object.database);
+        let mut names = db.list_collection_names().await?;
+        names.retain(|n| !n.starts_with("system."));
+        names.sort();
+
+        let sample = |coll: &str, n: i64| {
+            let c = db.collection::<Document>(coll);
+            async move {
+                let docs: Vec<Document> = c.find(doc! {}).limit(n).await?.try_collect().await?;
+                Ok::<_, anyhow::Error>(docs)
+            }
+        };
+        let exists = |coll: &str, id: &Bson| {
+            let c = db.collection::<Document>(coll);
+            let filter = doc! { "_id": id.clone() };
+            async move { c.count_documents(filter).limit(1).await.map(|n| n > 0).unwrap_or(false) }
+        };
+        let coll_ref = |name: &str| ObjectRef {
+            database: object.database.clone(),
+            schema: String::new(),
+            name: name.to_string(),
+            kind: ObjectKind::Collection,
+        };
+        let fk = |from: &str, field: &str, to: &str| ForeignKey {
+            name: format!("{from}.{field} → {to}"),
+            from: coll_ref(from),
+            from_columns: vec![field.to_string()],
+            to: coll_ref(to),
+            to_columns: vec!["_id".to_string()],
+            inferred: true,
+        };
+
+        let mut out = Vec::new();
+
+        // Outgoing: fields of this collection pointing elsewhere.
+        let docs = sample(&object.name, SAMPLE).await?;
+        for cand in mongo_refs::candidate_fields(&docs).into_iter().take(MAX_FIELDS) {
+            if let Some(target) = &cand.dbref {
+                if names.contains(target) {
+                    out.push(fk(&object.name, &cand.field, target));
+                }
+                continue;
+            }
+            let base = mongo_refs::reference_base(&cand.field);
+            let by_name: Vec<&String> = names.iter().filter(|c| mongo_refs::collection_matches(&base, c)).collect();
+            let mut target = None;
+            for c in &by_name {
+                if exists(c, &cand.sample).await {
+                    target = Some((*c).clone());
+                    break;
+                }
+            }
+            // Unusual names (createdBy, owner…): look the id up everywhere.
+            if target.is_none() && names.len() <= MAX_PROBE {
+                let probes = names.iter().map(|c| {
+                    let found = exists(c, &cand.sample);
+                    async move { (c, found.await) }
+                });
+                target = futures_util::future::join_all(probes)
+                    .await
+                    .into_iter()
+                    .find(|(_, found)| *found)
+                    .map(|(c, _)| c.clone());
+            }
+            if let Some(t) = target {
+                out.push(fk(&object.name, &cand.field, &t));
+            }
+        }
+
+        // Incoming: fields of other collections whose name points here.
+        let others: Vec<&String> = names.iter().filter(|c| **c != object.name).take(MAX_PROBE).collect();
+        let samples = futures_util::future::join_all(others.iter().map(|c| {
+            let s = sample(c, 5);
+            async move { (*c, s.await.unwrap_or_default()) }
+        }))
+        .await;
+        for (coll, docs) in samples {
+            for cand in mongo_refs::candidate_fields(&docs) {
+                let points_here = match &cand.dbref {
+                    Some(target) => *target == object.name,
+                    None => mongo_refs::collection_matches(&mongo_refs::reference_base(&cand.field), &object.name),
+                };
+                if points_here && exists(&object.name, &cand.sample).await {
+                    out.push(fk(coll, &cand.field, &object.name));
+                }
+            }
+        }
+        Ok(out)
     }
 
     pub fn open_session(&self, database: &str) -> MongoSession {

@@ -106,11 +106,12 @@ impl Connection {
         }
     }
 
-    /// Foreign keys from and to a table (Postgres; empty for Mongo).
+    /// Foreign keys from and to a table: declared ones for Postgres,
+    /// inferred ObjectId references for Mongo.
     pub async fn foreign_keys(&self, object: &ObjectRef) -> Result<Vec<ForeignKey>> {
         match self {
             Connection::Pg(c) => c.foreign_keys(object).await,
-            Connection::Mongo(_) => Ok(Vec::new()),
+            Connection::Mongo(c) => c.guess_references(object).await,
         }
     }
 

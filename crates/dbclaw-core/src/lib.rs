@@ -5,5 +5,6 @@
 pub mod conn_url;
 pub mod filter;
 pub mod model;
+pub mod mongo_refs;
 pub mod mongo_shell;
 pub mod sql;

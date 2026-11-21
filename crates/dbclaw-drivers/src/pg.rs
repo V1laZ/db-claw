@@ -256,6 +256,7 @@ impl PgConnection {
                 from_columns: names(r.get(4)),
                 to: obj(r.get(5), r.get(6), r.get(7)),
                 to_columns: names(r.get(8)),
+                inferred: false,
             })
             .filter(|fk| !fk.from_columns.is_empty() && fk.from_columns.len() == fk.to_columns.len())
             .collect())

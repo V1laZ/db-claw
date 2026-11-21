@@ -237,17 +237,9 @@ impl TableView {
         let started = Instant::now();
         cx.spawn(async move |this, cx| {
             let result = io(async move {
-                let (columns, fks) = if need_columns {
-                    let mut columns = conn.columns(&req.object).await?;
-                    // Navigation is a nicety; don't fail the page if this does.
-                    let fks = conn.foreign_keys(&req.object).await.unwrap_or_default();
-                    annotate_references(&mut columns, &fks, &req.object);
-                    (columns, Some(fks))
-                } else {
-                    (columns, None)
-                };
+                let columns = if need_columns { conn.columns(&req.object).await? } else { columns };
                 let page = conn.fetch_page(&req, &columns).await?;
-                Ok((columns, fks, page))
+                Ok((columns, page))
             })
             .await;
             this.update(cx, |this, cx| {
@@ -257,13 +249,13 @@ impl TableView {
                 this.loading = false;
                 this.elapsed = Some(started.elapsed());
                 match result {
-                    Ok((columns, fks, page)) => {
-                        if let Some(fks) = fks {
-                            this.fks = fks;
-                        }
+                    Ok((columns, page)) => {
                         if need_columns {
                             this.columns = columns;
                             this.columns_loaded = true;
+                            // References load in the background so the first
+                            // page never waits for them.
+                            this.load_references(cx);
                             let source = if this.columns.is_empty() { &page.columns } else { &this.columns };
                             this.pending_placeholder = Some(filter_placeholder(source));
                         }
@@ -284,6 +276,7 @@ impl TableView {
                                 t.scroll_to_row(0, cx);
                             }
                         });
+                        this.mark_references(cx);
                         // An unfiltered single page: the count is exact already.
                         if this.page == 0 && (rows as u64) < this.page_size {
                             this.total = Some(rows as u64);
@@ -891,44 +884,97 @@ impl TableView {
         self.fks.iter().filter(|f| same_object(&f.to, &self.object))
     }
 
-    /// Text values of `columns` in `row` (pending edits included).
-    fn row_values(&self, row: usize, columns: &[String], cx: &App) -> Result<Vec<String>, String> {
+    fn load_references(&mut self, cx: &mut Context<Self>) {
+        let conn = self.conn.clone();
+        let object = self.object.clone();
+        cx.spawn(async move |this, cx| {
+            // Navigation is a nicety: on failure there are just no links.
+            let fks = io(async move { conn.foreign_keys(&object).await }).await.unwrap_or_default();
+            this.update(cx, |this, cx| {
+                this.fks = fks;
+                this.mark_references(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Flag reference columns (link icon / cell arrows) in the loaded data.
+    fn mark_references(&mut self, cx: &mut Context<Self>) {
+        if self.fks.is_empty() {
+            return;
+        }
+        annotate_references(&mut self.columns, &self.fks, &self.object);
+        let (fks, object) = (self.fks.clone(), self.object.clone());
+        self.table.update(cx, |t, cx| {
+            let d = t.delegate_mut();
+            annotate_references(&mut d.set.columns, &fks, &object);
+            d.widen_reference_columns();
+            t.refresh(cx);
+        });
+        cx.notify();
+    }
+
+    /// Filter selecting the rows that `target_cols` share with this row's
+    /// `source_cols`, e.g. `id = "8"` or `_id = oid("…")`.
+    fn ref_filter(&self, row: usize, source_cols: &[String], target_cols: &[String], cx: &App) -> Result<String, String> {
         let d = self.table.read(cx).delegate();
-        columns
-            .iter()
-            .map(|name| {
+        let mut parts = Vec::new();
+        for (src, dst) in source_cols.iter().zip(target_cols) {
+            let field = filter_ident(dst);
+            let null = || format!("`{src}` is empty in this row — nothing to follow");
+            if let Some(docs) = d.set.documents.as_ref() {
+                let value = docs.get(row).and_then(|doc| doc.get(src));
+                match value {
+                    None | Some(bson::Bson::Null) => return Err(null()),
+                    Some(bson::Bson::Array(items)) => {
+                        let lits: Vec<String> = items.iter().filter_map(bson_literal).collect();
+                        if lits.is_empty() {
+                            return Err(null());
+                        }
+                        parts.push(format!("{field} in [{}]", lits.join(", ")));
+                    }
+                    Some(v) => {
+                        let v = match v {
+                            bson::Bson::Document(doc) => dbclaw_core::mongo_refs::dbref(doc).map(|(_, id)| id),
+                            other => Some(other.clone()),
+                        };
+                        let lit = v.as_ref().and_then(bson_literal).ok_or("this value can't be followed")?;
+                        parts.push(format!("{field} = {lit}"));
+                    }
+                }
+            } else {
                 let ix = d
                     .set
                     .columns
                     .iter()
-                    .position(|c| &c.name == name)
-                    .ok_or_else(|| format!("column `{name}` is not loaded"))?;
+                    .position(|c| &c.name == src)
+                    .ok_or_else(|| format!("column `{src}` is not loaded"))?;
                 match d.cell(row, ix) {
-                    Some(Cell::Value(v, _)) => Ok(v.to_string()),
-                    _ => Err(format!("`{name}` is NULL in this row — nothing to follow")),
+                    Some(Cell::Value(v, _)) => parts.push(format!("{field} = {}", quote_str(v))),
+                    _ => return Err(null()),
                 }
-            })
-            .collect()
+            }
+        }
+        Ok(parts.join(" and "))
     }
 
-    /// Where the foreign key through `column` points for `row`.
+    /// Where the reference through `column` points for `row`.
     pub fn reference_target(&self, row: usize, column: &str, cx: &App) -> Result<(ObjectRef, String), String> {
         let fk = self
             .outgoing_fks()
             .find(|f| f.from_columns.iter().any(|c| c == column))
-            .ok_or_else(|| format!("`{column}` is not part of a foreign key"))?;
-        let values = self.row_values(row, &fk.from_columns, cx)?;
-        Ok((fk.to.clone(), eq_filter(&fk.to_columns, &values)))
+            .ok_or_else(|| format!("`{column}` is not a reference"))?;
+        Ok((fk.to.clone(), self.ref_filter(row, &fk.from_columns, &fk.to_columns, cx)?))
     }
 
-    /// Rows of another table that reference `row` through `constraint`.
+    /// Rows of another table/collection that reference `row` through `constraint`.
     pub fn referencing_target(&self, row: usize, constraint: &str, cx: &App) -> Result<(ObjectRef, String), String> {
         let fk = self.incoming_fks().find(|f| f.name == constraint).ok_or_else(|| {
             let names: Vec<String> = self.incoming_fks().map(|f| format!("{} ({})", f.name, f.source_label())).collect();
-            format!("no incoming foreign key `{constraint}`; available: {}", names.join(", "))
+            format!("no incoming reference `{constraint}`; available: {}", names.join(", "))
         })?;
-        let values = self.row_values(row, &fk.to_columns, cx)?;
-        Ok((fk.from.clone(), eq_filter(&fk.from_columns, &values)))
+        Ok((fk.from.clone(), self.ref_filter(row, &fk.to_columns, &fk.from_columns, cx)?))
     }
 
     fn emit_open(&mut self, target: Result<(ObjectRef, String), String>, window: &mut Window, cx: &mut Context<Self>) {
@@ -1121,27 +1167,38 @@ fn annotate_references(columns: &mut [ColumnMeta], fks: &[ForeignKey], object: &
     for fk in fks.iter().filter(|f| same_object(&f.from, object)) {
         for name in &fk.from_columns {
             if let Some(c) = columns.iter_mut().find(|c| &c.name == name) {
-                c.references = Some(fk.target_label());
+                c.references = Some(if fk.inferred {
+                    format!("{} (inferred from ObjectIds)", fk.target_label())
+                } else {
+                    fk.target_label()
+                });
             }
         }
     }
 }
 
-/// `a = "1" and b = "x"` in the filter language.
-fn eq_filter(columns: &[String], values: &[String]) -> String {
-    columns
-        .iter()
-        .zip(values)
-        .map(|(c, v)| {
-            let ident = if c.chars().all(|ch| ch.is_alphanumeric() || ch == '_') {
-                c.clone()
-            } else {
-                format!("`{}`", c.replace('`', ""))
-            };
-            format!("{ident} = {}", quote_str(v))
-        })
-        .collect::<Vec<_>>()
-        .join(" and ")
+/// A column/field name in the filter language.
+fn filter_ident(name: &str) -> String {
+    if name.chars().all(|ch| ch.is_alphanumeric() || ch == '_') {
+        name.to_string()
+    } else {
+        format!("`{}`", name.replace('`', ""))
+    }
+}
+
+/// A BSON value as a filter-language literal.
+fn bson_literal(v: &bson::Bson) -> Option<String> {
+    use bson::Bson;
+    Some(match v {
+        Bson::ObjectId(oid) => format!("oid(\"{oid}\")"),
+        Bson::String(s) => quote_str(s),
+        Bson::Int32(n) => n.to_string(),
+        Bson::Int64(n) => n.to_string(),
+        Bson::Double(n) => format!("{n:?}"),
+        Bson::Boolean(b) => b.to_string(),
+        Bson::DateTime(dt) => format!("date(\"{}\")", dt.try_to_rfc3339_string().ok()?),
+        _ => return None,
+    })
 }
 
 fn act_owned(label: String, icon: Lucide, view: WeakEntity<TableView>, f: RowAction) -> PopupMenuItem {
@@ -1722,6 +1779,7 @@ impl TableView {
                 "from_columns": f.from_columns,
                 "to": f.to.display_name(),
                 "to_columns": f.to_columns,
+                "inferred": f.inferred,
             }))
             .collect::<Vec<_>>());
         tab["grid"] = grid_json(d, offset, limit);
