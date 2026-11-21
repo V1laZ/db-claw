@@ -1,0 +1,32 @@
+# Local test databases for DB Claw.
+#   docker compose up -d
+# Postgres: postgres://dbclaw:dbclaw@localhost:54329/shop
+# Mongo:    mongodb://dbclaw:dbclaw@localhost:27019/?authSource=admin  (database "shop")
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: dbclaw
+      POSTGRES_PASSWORD: dbclaw
+      POSTGRES_DB: shop
+    ports: ["54329:5432"]
+    volumes:
+      - ./docker/postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbclaw -d shop"]
+      interval: 2s
+      retries: 30
+
+  mongo:
+    image: mongo:8
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: dbclaw
+      MONGO_INITDB_ROOT_PASSWORD: dbclaw
+      MONGO_INITDB_DATABASE: shop
+    ports: ["27019:27017"]
+    volumes:
+      - ./docker/mongo:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "-u", "dbclaw", "-p", "dbclaw", "--eval", "db.adminCommand('ping')"]
+      interval: 2s
+      retries: 30
