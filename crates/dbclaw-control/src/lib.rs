@@ -11,13 +11,17 @@
 //! [`METHODS`] documents every method; the `dbclaw-ctl` binary exposes them
 //! as a CLI and as MCP tools.
 
+#[cfg(unix)]
 use std::io::{BufRead as _, BufReader, Write as _};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::time::Duration;
 
-use anyhow::{Context as _, Result, anyhow, bail};
+#[cfg(unix)]
+use anyhow::anyhow;
+use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -68,13 +72,32 @@ pub fn default_socket_path() -> PathBuf {
     path
 }
 
-/// Blocking client for the control socket.
+/// Blocking client for the control socket (Unix only for now; on other
+/// platforms `connect` reports that the control server isn't available).
+#[cfg(unix)]
 pub struct Client {
     reader: BufReader<UnixStream>,
     writer: UnixStream,
     next_id: u64,
 }
 
+#[cfg(not(unix))]
+pub struct Client {
+    _private: (),
+}
+
+#[cfg(not(unix))]
+impl Client {
+    pub fn connect(_path: &std::path::Path) -> Result<Client> {
+        bail!("the DB Claw control server is only available on macOS and Linux for now")
+    }
+
+    pub fn call(&mut self, _method: &str, _params: Value) -> Result<Value> {
+        bail!("the DB Claw control server is only available on macOS and Linux for now")
+    }
+}
+
+#[cfg(unix)]
 impl Client {
     pub fn connect(path: &std::path::Path) -> Result<Client> {
         let stream = UnixStream::connect(path).with_context(|| {

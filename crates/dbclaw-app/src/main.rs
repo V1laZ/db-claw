@@ -1,5 +1,8 @@
 //! DB Claw — a fast native database manager for PostgreSQL and MongoDB.
 
+// A GUI app: no console window on Windows.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 mod actions;
 mod connection_dialog;
 mod control;

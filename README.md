@@ -16,6 +16,12 @@ A fast, native database manager for **PostgreSQL** and **MongoDB**, written in R
 - **Automation API.** `dbclaw-ctl` drives the running app from the shell or as an
   **MCP server**, so AI agents can use it.
 
+## Download
+
+Builds for macOS (Apple Silicon), Linux and Windows are on the
+[Releases](../../releases) page. See the release notes for first-launch tips (the apps aren't
+notarized / code-signed yet).
+
 ## Quick start
 
 ```sh
@@ -144,10 +150,10 @@ docker compose up -d && DBCLAW_LIVE=1 cargo test -p dbclaw-drivers --test live
 
 ## Platform notes
 
-Developed and tested on macOS. GPUI and every dependency also support Windows and Linux, and
-key bindings use the platform modifier (⌘ on macOS, Ctrl elsewhere). The app hasn't been built
-on Windows yet. The automation server currently needs Unix sockets (macOS/Linux), and
-`screenshot` uses macOS `screencapture`.
+Developed and tested on macOS; release builds are produced for macOS (Apple Silicon), Linux
+x86_64 and Windows x86_64 by `.github/workflows/release.yml` (push a `v*` tag). Key bindings use
+the platform modifier (⌘ on macOS, Ctrl elsewhere). The automation server currently needs Unix
+sockets (macOS/Linux), and `screenshot` uses macOS `screencapture`.
 
 Saved connections, including passwords, are stored in `connections.json` in the platform
 config directory with `0600` permissions.
