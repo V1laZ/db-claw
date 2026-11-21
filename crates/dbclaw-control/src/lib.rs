@@ -155,9 +155,16 @@ pub static METHODS: &[MethodSpec] = &[
     },
     MethodSpec {
         name: "add_connection",
-        description: "Save a new connection. The URL may contain the password; it is stored separately. Returns the connection.",
+        description: "Save a new connection, given either a `url` or individual fields (`kind`, `host`, `port`, `user`, `database`, `options`). A password in the URL is stored separately. Connects right away unless connect=false.",
         params: &[
-            ("url", "string", "postgres://user@host:5432/db or mongodb://user@host:27017/db?authSource=admin", true),
+            ("url", "string", "postgres://user@host:5432/db or mongodb://user@host:27017/db?authSource=admin", false),
+            ("kind", "string", "postgres or mongo (when not using `url`)", false),
+            ("host", "string", "Host name (default localhost); Mongo replica sets: a:27017,b:27017", false),
+            ("port", "integer", "Port (default 5432 / 27017)", false),
+            ("user", "string", "User name", false),
+            ("database", "string", "Database", false),
+            ("options", "string", "Extra URL parameters, e.g. sslmode=require or authSource=admin", false),
+            ("srv", "boolean", "Mongo: use mongodb+srv:// (DNS seed list)", false),
             ("name", "string", "Display name (derived from the URL if omitted)", false),
             ("password", "string", "Password (optional)", false),
             ("read_only", "boolean", "Disable editing in the data grid", false),

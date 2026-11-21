@@ -302,8 +302,26 @@ impl Ctx {
         match method {
             "state" => self.state(cx),
             "add_connection" => {
-                let raw_url = req_str(&params, "url")?;
-                let (url, url_pw) = split_url_password(raw_url);
+                let raw_url = match p_str(&params, "url") {
+                    Some(u) => u.to_string(),
+                    None => {
+                        let kind = match p_str(&params, "kind").map(str::to_lowercase).as_deref() {
+                            Some("postgres" | "postgresql" | "pg") => DbKind::Postgres,
+                            Some("mongo" | "mongodb") => DbKind::Mongo,
+                            _ => bail!("pass `url`, or `kind` (postgres|mongo) with host/port/user/database"),
+                        };
+                        let parts = dbclaw_core::conn_url::UrlParts {
+                            srv: p_bool(&params, "srv").unwrap_or(false),
+                            host: p_str(&params, "host").unwrap_or("localhost").to_string(),
+                            port: p_u64(&params, "port").map(|p| p as u16),
+                            user: p_str(&params, "user").unwrap_or_default().to_string(),
+                            database: p_str(&params, "database").unwrap_or_default().to_string(),
+                            options: p_str(&params, "options").unwrap_or_default().to_string(),
+                        };
+                        dbclaw_core::conn_url::build(kind, &parts)
+                    }
+                };
+                let (url, url_pw) = split_url_password(&raw_url);
                 let kind = DbKind::from_url(&url)
                     .ok_or_else(|| anyhow!("URL must start with postgres:// or mongodb://"))?;
                 let name = p_str(&params, "name")

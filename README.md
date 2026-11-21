@@ -30,8 +30,11 @@ docker compose up -d
 # Mongo:    mongodb://dbclaw:dbclaw@localhost:27019/shop?authSource=admin
 ```
 
-Add a connection with **⌘N** and paste the URL. A password in the URL is moved into the
-password field automatically.
+Add a connection with **⌘N**. Fill in host, port, database, user, password and optional
+URL parameters (e.g. `sslmode=require`, `authSource=admin`), or switch to **URL** and paste a
+connection string. The two modes convert into each other, a password inside a pasted URL
+goes to the password field, and a URL pasted into the Host field is split into the fields.
+MongoDB Atlas-style `mongodb+srv://` hosts are supported.
 
 ## Using it
 
@@ -78,6 +81,7 @@ It's off by default because it can change data.
 
 ```sh
 dbclaw-ctl state                                         # connections, tabs, errors…
+dbclaw-ctl add_connection kind=postgres host=db.local port=5432 user=me password=… database=app
 dbclaw-ctl open_table connection=postgres name=customers
 dbclaw-ctl filter text='country = "CZ" and balance > 1000'
 dbclaw-ctl sort column=balance dir=desc
