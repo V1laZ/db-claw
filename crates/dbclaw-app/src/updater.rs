@@ -13,8 +13,8 @@
 //!   reopen it once this process has exited.
 //! - Linux: replace the AppImage file and start it again.
 //!
-//! Installs that can't update themselves (the portable Windows zip, a
-//! read-only `/Applications`, a plain Linux binary) get a "Download" link to
+//! Copies that can't update themselves (a bare `dbclaw.exe` or binary run from a
+//! build folder or an old 0.1.0 zip, a read-only `/Applications`) get a "Download" link to
 //! the release page instead.
 //!
 //! Environment overrides: `DBCLAW_UPDATE_URL` (another update server),
@@ -249,7 +249,7 @@ fn install_target(kind: &str) -> Result<PathBuf> {
     match (std::env::consts::OS, kind) {
         ("windows", "installer") => {
             let dir = exe.parent().context("no install folder")?;
-            // Only installed copies have the uninstaller; a portable copy
+            // Only installed copies have the uninstaller; a bare exe
             // would otherwise get a second, installed one.
             if !dir.join("unins000.exe").exists() {
                 bail!("not an installed copy");

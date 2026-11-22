@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Package DB Claw for Linux:
-#   <out_dir>/<name>.AppImage   self-contained app, used by in-app updates
-#   <out_dir>/<name>.tar.gz     plain binaries
+# Package DB Claw for Linux as <out_dir>/<name>.AppImage (also used by
+# in-app updates).
 #
 #   scripts/package-linux.sh <binary dir> <out dir> <name>
 # Needs appimagetool on PATH (or $APPIMAGETOOL).
@@ -17,12 +16,6 @@ out_dir="$(cd "$out_dir" && pwd)"
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 
-# tar.gz
-mkdir -p "$stage/$name"
-cp "$bin_dir/dbclaw" "$bin_dir/dbclaw-ctl" "$root/README.md" "$root/LICENSE" "$stage/$name/"
-tar -C "$stage" -czf "$out_dir/$name.tar.gz" "$name"
-
-# AppImage
 app="$stage/AppDir"
 mkdir -p "$app/usr/bin" "$app/usr/share/applications" "$app/usr/share/icons/hicolor/512x512/apps"
 cp "$bin_dir/dbclaw" "$bin_dir/dbclaw-ctl" "$app/usr/bin/"
@@ -35,4 +28,3 @@ ln -s dbclaw.png "$app/.DirIcon"
 ARCH=x86_64 "$tool" --no-appstream "$app" "$out_dir/$name.AppImage"
 
 echo "$out_dir/$name.AppImage"
-echo "$out_dir/$name.tar.gz"

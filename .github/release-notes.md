@@ -14,8 +14,8 @@ DB Claw now comes with proper installers and updates itself.
 | Platform | File |
 |---|---|
 | macOS (Apple Silicon) | `db-claw-v…-macos-arm64.dmg`: open it and drag **DB Claw** to Applications |
-| Windows x86_64 | `db-claw-v…-windows-x86_64-setup.exe` (or `…-portable.zip`) |
-| Linux x86_64 | `db-claw-v…-linux-x86_64.AppImage`: `chmod +x` and run (or `….tar.gz`) |
+| Windows x86_64 | `db-claw-v…-windows-x86_64-setup.exe` |
+| Linux x86_64 | `db-claw-v…-linux-x86_64.AppImage`: `chmod +x` and run |
 
 `*.app.tar.gz` and `latest.json` are used by in-app updates. `SHA256SUMS.txt` lists checksums.
 

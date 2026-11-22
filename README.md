@@ -26,8 +26,7 @@ Get the latest build from the [Releases](../../releases/latest) page:
 | Windows x86_64 | `…-windows-x86_64-setup.exe`: per-user install, no admin rights | added to `PATH` by the installer |
 | Linux x86_64 | `…-linux-x86_64.AppImage`: `chmod +x` and run | `./DB-Claw.AppImage ctl …` |
 
-Portable builds (`…-windows-x86_64-portable.zip`, `…-linux-x86_64.tar.gz`) are there too, but
-they don't update themselves. The apps aren't notarized or code-signed yet: on macOS,
+The apps aren't notarized or code-signed yet: on macOS,
 right-click → **Open** the first time; on Windows, SmartScreen → *More info* → *Run anyway*.
 
 ### Updates

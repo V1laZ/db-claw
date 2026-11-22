@@ -73,7 +73,7 @@ jobs:
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
-        # .AppImage (installs + in-app updates) and a plain .tar.gz.
+        # .AppImage (installs + in-app updates).
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
           APPIMAGETOOL: ${{ runner.temp }}/appimagetool
@@ -84,7 +84,7 @@ jobs:
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
-        # Inno Setup installer (installs + in-app updates) and a portable zip.
+        # Inno Setup installer (installs + in-app updates).
         shell: pwsh
         run: |
           $v = "${{ steps.version.outputs.version }}"
@@ -95,10 +95,6 @@ jobs:
           $out = (Resolve-Path dist).Path
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DAppVersion=$v" "/DNumericVersion=$numeric" "/DBinDir=$bin" "/DOutDir=$out" "/DOutName=$archive-setup" packaging\windows\dbclaw.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
-          New-Item -ItemType Directory -Force -Path "dist/$archive" | Out-Null
-          Copy-Item "$bin/dbclaw.exe", "$bin/dbclaw-ctl.exe", "README.md", "LICENSE" "dist/$archive/"
-          Compress-Archive -Path "dist/$archive" -DestinationPath "dist/$archive-portable.zip"
-          Remove-Item -Recurse -Force "dist/$archive"
 
       - uses: actions/upload-artifact@v4
         with:
