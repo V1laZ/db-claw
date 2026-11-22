@@ -69,6 +69,9 @@ fn main() {
         .with_assets(gpui_kit::assets::AllAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            // One main window: closing it quits, on macOS too (its default would
+            // keep a windowless app in the Dock).
+            cx.set_quit_mode(QuitMode::LastWindowClosed);
             Theme::sync_system_appearance(None, cx);
             cx.bind_keys(key_bindings());
             cx.on_action(|_: &Quit, cx| cx.quit());
