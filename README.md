@@ -16,6 +16,16 @@ A fast, native database manager for **PostgreSQL** and **MongoDB**, written in R
 - **Automation API.** `dbclaw-ctl` drives the running app from the shell or as an
   **MCP server**, so AI agents can use it.
 
+## What it's for
+
+DB Claw is built for **simple, everyday database work**: browsing tables and collections,
+filtering, looking up related rows, quick edits, and ad-hoc queries. It stays small and fast
+on purpose.
+
+It is **not** a full database IDE. For heavier work such as migrations, schema design,
+import/export, backups, or administration, use a more robust tool like
+[DBeaver](https://dbeaver.io) (SQL databases) or [Studio 3T](https://studio3t.com) (MongoDB).
+
 ## Download
 
 Get the latest build from the [Releases](../../releases/latest) page:
