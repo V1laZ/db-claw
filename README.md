@@ -1,211 +1,134 @@
 # DB Claw
 
-A fast, native database manager for **PostgreSQL** and **MongoDB**, written in Rust with
-[GPUI](https://gpui.rs) (Zed's GPU-accelerated UI framework) and
-[GPUI Kit](https://gpui-kit.com) components.
+A fast, native database manager for **PostgreSQL** and **MongoDB**.
 
-- **Snappy by design.** The UI thread never waits on the network. All I/O runs on a dedicated tokio runtime,
-  values are pre-rendered to text off the UI thread, and the grid is virtualized (only visible
-  cells are laid out). Stale results are discarded when you click faster than the server answers.
-- **One filter language for both databases.** Type `age > 30 and name ~ "jo"` above any table or
-  collection. It compiles to a SQL `WHERE` clause or a Mongo filter.
-- **Native consoles** for full SQL (multiple statements, transactions, notices) and mongosh syntax
-  (`db.users.find({…}).sort({…})`, `aggregate`, `insertOne`, `updateMany`, …).
-- **Editing in the grid.** Double-click a cell to edit it; deletions are staged too, and ⌘S saves everything at once
-  (one transaction on Postgres). Insert rows through a form (SQL) or a document editor (Mongo).
-- **Automation API.** `dbclaw-ctl` drives the running app from the shell or as an
-  **MCP server**, so AI agents can use it.
+- **Snappy.** Native app with a GPU-rendered UI; it never freezes while waiting on the database.
+- **One filter language** for both databases, plus full SQL and mongosh consoles.
+- **Edit in the grid**, follow foreign keys and MongoDB references with one click.
+- **Built-in MCP server**, so AI agents like Claude Code can drive the app.
 
 ## What it's for
 
-DB Claw is built for **simple, everyday database work**: browsing tables and collections,
-filtering, looking up related rows, quick edits, and ad-hoc queries. It stays small and fast
-on purpose.
+DB Claw is for **simple, everyday database work**: browsing tables and collections, filtering,
+looking up related rows, quick edits and ad-hoc queries.
 
-It is **not** a full database IDE. For heavier work such as migrations, schema design,
-import/export, backups, or administration, use a more robust tool like
-[DBeaver](https://dbeaver.io) (SQL databases) or [Studio 3T](https://studio3t.com) (MongoDB).
+It is **not** a full database IDE. For migrations, schema design, import/export, backups or
+administration, use a more robust tool like [DBeaver](https://dbeaver.io) (SQL databases) or
+[Studio 3T](https://studio3t.com) (MongoDB).
 
-## Download
+## Install and set up
 
-Get the latest build from the [Releases](../../releases/latest) page:
+Download from the [latest release](../../releases/latest), then follow your system's section.
+The apps aren't code-signed yet, so the first launch needs one extra click.
 
-| Platform | Install | `dbclaw-ctl` |
-|---|---|---|
-| macOS (Apple Silicon) | `…-macos-arm64.dmg`: drag **DB Claw** to Applications | `/Applications/DB Claw.app/Contents/MacOS/dbclaw-ctl` (symlink it onto your `PATH`) |
-| Windows x86_64 | `…-windows-x86_64-setup.exe`: per-user install, no admin rights | added to `PATH` by the installer |
-| Linux x86_64 | `…-linux-x86_64.AppImage`: `chmod +x` and run | `./DB-Claw.AppImage ctl …` |
+**About the MCP server:** the app only accepts automation when started with `--control`. It
+listens on a private channel only your user account can reach. Agents can change data, so for
+production databases connect with a **read-only database user** (the *Read-only* checkbox in the
+connection dialog only blocks grid edits, not console queries).
 
-The apps aren't notarized or code-signed yet, so the first launch needs one extra step:
+### macOS (Apple Silicon)
 
-- **macOS**: opening the app shows *"DB Claw" Not Opened*. Click **Done**, then go to
-  **System Settings → Privacy & Security**, click **Open Anyway** next to the DB Claw message
-  and confirm. (Or run `xattr -dr com.apple.quarantine "/Applications/DB Claw.app"`.)
-- **Windows**: SmartScreen → *More info* → *Run anyway*.
+**Install**
 
-Updates installed from inside the app don't ask again.
+1. Download `db-claw-v…-macos-arm64.dmg`, open it and drag **DB Claw** to **Applications**.
+2. Open DB Claw. macOS shows *"DB Claw" Not Opened*: click **Done**, go to
+   **System Settings → Privacy & Security**, click **Open Anyway** and confirm.
 
-### Updates
+**Use with Claude Code**
 
-Installed copies check `https://dbclaw.vilaz.dev` shortly after start and then once a day
-(**DB Claw → Check for Updates…** or the link on the start screen checks right away). A newer
-version is downloaded in the background and installed when you click **Restart to update**.
-Every update file is signed in CI (Ed25519); the app verifies the signature and SHA-256 against
-keys built into it before installing anything. The check sends only the platform, the current
-version and the channel.
+1. Quit DB Claw, then start it with automation on:
+   ```sh
+   open -a "DB Claw" --args --control
+   ```
+2. Add the MCP server to Claude Code (once):
+   ```sh
+   claude mcp add --scope user dbclaw -- "/Applications/DB Claw.app/Contents/MacOS/dbclaw-ctl" mcp
+   ```
+3. Restart Claude Code and run `/mcp`: **dbclaw** should show as connected.
 
-Turn automatic checks off with `"check_for_updates": false` in `settings.json` (next to
-`connections.json`), or `DBCLAW_NO_UPDATE_CHECK=1`. `"update_channel": "beta"` also offers
-pre-releases.
+### Windows (x64)
 
-## Quick start
+**Install**
 
+1. Download and run `db-claw-v…-windows-x86_64-setup.exe`. It installs for your user only, no
+   admin rights needed. Keep **Add dbclaw-ctl (automation CLI / MCP server) to PATH** ticked.
+2. If SmartScreen warns about an unknown publisher: **More info → Run anyway**.
+
+**Use with Claude Code**
+
+1. Quit DB Claw, then start it with automation on (PowerShell):
+   ```powershell
+   & "$env:LOCALAPPDATA\Programs\DB Claw\dbclaw.exe" --control
+   ```
+2. Add the MCP server to Claude Code (once), in a **new** terminal:
+   ```powershell
+   claude mcp add --scope user dbclaw -- dbclaw-ctl mcp
+   ```
+3. Restart Claude Code and run `/mcp`: **dbclaw** should show as connected.
+
+**Claude Code in WSL** controlling DB Claw on Windows: start the app as in step 1, then in WSL:
 ```sh
-cargo run --release -p dbclaw-app          # the app (binary: dbclaw)
+claude mcp add --scope user dbclaw -- dbclaw-ctl.exe mcp
 ```
+If `dbclaw-ctl.exe` isn't found, run `wsl --shutdown` in PowerShell and reopen WSL (it picks up
+the new PATH), or use the full path
+`"/mnt/c/Users/<you>/AppData/Local/Programs/DB Claw/dbclaw-ctl.exe"`.
 
-Test databases with sample data (needs Docker):
+> On some company PCs, IT policy blocks programs in your user folder. Windows then says it
+> *cannot access the specified device, path or file*. Ask IT to allow DB Claw.
 
-```sh
-docker compose up -d
-# Postgres: postgres://dbclaw:dbclaw@localhost:54329/shop
-# Mongo:    mongodb://dbclaw:dbclaw@localhost:27019/shop?authSource=admin
-```
+### Linux (x86_64)
 
-Add a connection with **⌘N**. Fill in host, port, database, user, password and optional
-URL parameters (e.g. `sslmode=require`, `authSource=admin`), or switch to **URL** and paste a
-connection string. The two modes convert into each other, a password inside a pasted URL
-goes to the password field, and a URL pasted into the Host field is split into the fields.
-MongoDB Atlas-style `mongodb+srv://` hosts are supported.
+**Install**
 
-## Using it
+1. Download `db-claw-v…-linux-x86_64.AppImage` and put it somewhere permanent, e.g.:
+   ```sh
+   mkdir -p ~/Applications
+   mv ~/Downloads/db-claw-v*-linux-x86_64.AppImage ~/Applications/DBClaw.AppImage
+   chmod +x ~/Applications/DBClaw.AppImage
+   ```
+2. Run it: `~/Applications/DBClaw.AppImage`. Needs a Vulkan-capable GPU driver.
 
-| Where | How |
+**Use with Claude Code**
+
+1. Start it with automation on:
+   ```sh
+   ~/Applications/DBClaw.AppImage --control
+   ```
+2. Add the MCP server to Claude Code (once):
+   ```sh
+   claude mcp add --scope user dbclaw -- ~/Applications/DBClaw.AppImage ctl mcp
+   ```
+3. Restart Claude Code and run `/mcp`: **dbclaw** should show as connected.
+
+## Try it
+
+Ask Claude Code something like:
+
+> Use the dbclaw tools: show my connections, open the `orders` table, filter it to orders over
+> 1000 and take a screenshot.
+
+Without an AI agent, the same commands work from a terminal: `dbclaw-ctl state`,
+`dbclaw-ctl help` (on Linux: `DBClaw.AppImage ctl …`).
+
+## Updates
+
+DB Claw checks for updates once a day and installs them when you click **Restart to update**
+(to check now: **Check for updates** on the start screen, or **DB Claw → Check for Updates…** on
+macOS). Updates are signed and verified before installing.
+
+To turn automatic checks off, put `{"check_for_updates": false}` in `settings.json` next to
+your saved connections:
+
+| System | Folder |
 |---|---|
-| Sidebar | Click a connection to connect, then a table / collection to open it. ⌘P searches tables. Right-click for consoles, refresh, edit, delete. |
-| Filter bar (⌘F) | Universal filter language, applied with Enter. `?` shows the cheat sheet. Right-click a cell → *Filter by this value*. |
-| Grid | Click a header to sort (server-side). Double-click / Enter / F2 edits a cell, ⌘⇧N sets NULL, ⌘⌫ marks a row for deletion, ⌘C copies, ⌘[ / ⌘] pages. |
-| References | Foreign-key columns show a link icon in the header and an ↗ arrow in each cell. Click it to open the referenced row. Right-click a row → *Referenced by* opens the rows of other tables that point to it. On MongoDB, references are inferred: fields holding ObjectIds (or arrays of them, or DBRefs), including nested ones like `address.cityId` and `items.productId`, are matched to collections by name (`userId` → `users`) and confirmed by finding a sampled id in that collection; unusual names fall back to looking the id up in every collection. When one column holds several references (e.g. `route.fromCityId`, `route.toCityId`), its arrow opens a chooser listing each path and its target. |
-| Saving | Edited cells turn yellow, deleted rows are struck through. ⌘S saves, *Discard* reverts. Postgres saves in one transaction and every UPDATE/DELETE must hit exactly one row (by primary key, or `ctid` for tables without one). |
-| Insert | ⌘I or **+**: a form for SQL tables (empty = column default / NULL), a relaxed-JSON editor for Mongo. Right-click → *Duplicate row…* pre-fills it. |
-| Autocomplete | Suggestions appear while you type; **Ctrl+Space** opens them on demand, Enter/Tab accepts. SQL console: keywords, functions, schemas, tables, and columns of the tables in the statement (also via aliases: `o.` → columns of `orders o`). Mongo console: `db.` → collections, `db.users.` → methods, `$` → operators, and field paths inside `{…}` (from a sample of the collection). Filter bar: columns (Mongo: nested paths too), then operators that fit the column type, then `and`/`or`. |
-| Console (⌘T) | ⌘↵ runs the statement at the cursor (or the selection); ⇧⌘↵ runs everything; ⌘. cancels. In a Mongo console a bare `{…}` filter runs `find` on the current collection. |
-| Tabs | ⌘W closes, ⌃Tab / ⌘⇧] switches, ⌘B toggles the sidebar. |
+| macOS | `~/Library/Application Support/DB Claw` |
+| Windows | `%APPDATA%\DB Claw` |
+| Linux | `~/.config/DB Claw` |
 
-### Filter language
+Saved connections (`connections.json`, including passwords) live in the same folder, inside
+your user profile (on macOS and Linux readable only by your user).
 
-```text
-status = "active" and age >= 18      =  !=  <  <=  >  >=
-name ~ "jo"   name !~ "test"          contains / not contains (any case)
-email ^= "admin"   email $= ".cz"     starts with / ends with (any case)
-title like "foo%"   ilike "a_c"       SQL wildcards: % any run, _ one char
-name matches "^J.*n$"   name = /^j/i  regular expression
-tags in ["a", "b", 3]   not in [...]  one of / none of
-deleted_at is null   is not null      age between 18 and 65
-profile exists   profile not exists   field is present / absent
-not (a = 1 or b = 2)                  and/&&  or/||  not/!  ( )
-address.city = "Prague"   `odd name` = 1   created > date("2024-01-01")   _id = oid("…")
-```
+## License
 
-On Postgres, dotted paths into `json`/`jsonb` columns become `#>>` lookups, and array
-columns use `= ANY(…)`. Values are inlined as untyped literals, so Postgres coerces
-them to each column's type. Full reference: `crates/dbclaw-core/src/filter/mod.rs`.
-
-## Load on the database
-
-DB Claw is built to be safe to point at production servers:
-
-- **Pages** are fetched with `LIMIT` (500 rows by default) and ordered by the primary key, so a
-  page read is an index scan.
-- **Row counts are time-limited to 3 s.** Postgres falls back to the planner's estimate
-  (`of ~1,234,567`) or to `of many` for filters; MongoDB uses collection metadata for unfiltered
-  counts and `maxTimeMS` for filtered ones.
-- **Grid queries** run with a 30 s `statement_timeout`. Console queries are unlimited (you can
-  cancel them with ⌘.).
-- **Connections:** at most 3 browse connections plus 1 for saving per Postgres database; each
-  console tab has its own session.
-- **Inferring MongoDB references** samples 20 documents per collection and confirms guesses with
-  `_id` lookups. It reads real collections only (never views), issues at most 60 queries per
-  collection (4 at a time, 1 s server limit each), and caches results for 10 minutes. Measured
-  with the MongoDB profiler on the sample database: opening a collection costs 10 queries, the
-  next one 5, and a refresh 3, each under 1 ms.
-
-## Automation: CLI and MCP
-
-Start the app with the control server enabled:
-
-```sh
-DBCLAW_CONTROL=1 cargo run --release -p dbclaw-app     # or: dbclaw --control
-```
-
-It listens on an endpoint only your user can open, and is off by default because it can change
-data:
-
-- **macOS / Linux:** a Unix socket with `0600` permissions
-  (`~/Library/Application Support/DB Claw/control.sock` on macOS, or `$DBCLAW_CONTROL_SOCKET`).
-- **Windows:** the named pipe `\\.\pipe\dbclaw-control-<your user SID>`, with an access list that
-  allows only your account. It rejects remote clients and won't start if another process already
-  owns the name. `dbclaw-ctl.exe` also refuses a pipe that isn't served by your user.
-
-```sh
-dbclaw-ctl state                                         # connections, tabs, errors…
-dbclaw-ctl add_connection kind=postgres host=db.local port=5432 user=me password=… database=app
-dbclaw-ctl open_table connection=postgres name=customers
-dbclaw-ctl filter text='country = "CZ" and balance > 1000'
-dbclaw-ctl sort column=balance dir=desc
-dbclaw-ctl follow_reference row=0 column=customer_id     # foreign key → customers
-dbclaw-ctl edit_cell row=0 column=name value='"Eva"'
-dbclaw-ctl save
-dbclaw-ctl run connection=mongo text='db.orders.aggregate([{$group: {_id: "$status", n: {$sum: 1}}}])'
-dbclaw-ctl screenshot /tmp/dbclaw.png                    # rendered by the app: works when covered
-dbclaw-ctl help                                          # all methods; `help <method>` for params
-```
-
-Every method waits for its work to finish (page loaded, save committed, query done) and
-returns JSON. Connections can be addressed by id, name, or any unique part of the name.
-Low-level `key`, `type`, `action` and `click` methods reach anything the semantic methods don't.
-In control mode, animations are off so the UI settles immediately (and renders even when the
-window is covered).
-
-**MCP:** `dbclaw-ctl mcp` serves the same methods as MCP tools over stdio, and `screenshot`
-comes back as an image. This repository's `.mcp.json` registers it for Claude Code. For other
-clients, run `dbclaw-ctl mcp` as a stdio server.
-
-**WSL:** run the Linux `dbclaw-ctl` (or `dbclaw-ctl mcp`) inside WSL as usual. If no DB Claw is
-running *inside* WSL, it hands off to the Windows `dbclaw-ctl.exe` (through WSL's Windows
-interop), which talks to the app on the Windows side as your Windows user. `dbclaw-ctl.exe`
-is looked up via `$DBCLAW_CTL_EXE`, then the PATH (WSL appends the Windows PATH by default).
-`DBCLAW_WSL_HANDOFF=0` disables the hand-off. You can also point the MCP config at the Windows
-binary directly, e.g. `"command": "/mnt/c/Tools/db-claw/dbclaw-ctl.exe"`.
-
-`screenshot` is rendered by the app itself (offscreen), so it works when the window is covered,
-needs no screen-recording permission, and also works over the Windows pipe and from WSL. It's
-available on macOS and Windows; Linux isn't supported yet (GPUI can't render to images there).
-
-## Layout
-
-```text
-crates/
-  dbclaw-core      model, SQL helpers, filter language, mongosh parser/formatter (no I/O)
-  dbclaw-drivers   Postgres (tokio-postgres, simple-query text protocol) and MongoDB drivers
-  dbclaw-control   automation protocol, `dbclaw-ctl` CLI + MCP server
-  dbclaw-app       the GPUI application
-docker/            seed data for docker-compose
-```
-
-## Tests
-
-```sh
-cargo test --workspace                                   # unit tests
-docker compose up -d && DBCLAW_LIVE=1 cargo test -p dbclaw-drivers --test live
-```
-
-## Platform notes
-
-Developed and tested on macOS; release builds are produced for macOS (Apple Silicon), Linux
-x86_64 and Windows x86_64 by `.github/workflows/release.yml` (push a `v*` tag). Key bindings use
-the platform modifier (⌘ on macOS, Ctrl elsewhere). The automation server works on all three
-(Unix socket / Windows named pipe); `screenshot` works on macOS and Windows.
-
-Saved connections, including passwords, are stored in `connections.json` in the platform
-config directory with `0600` permissions.
+[MIT](LICENSE)
