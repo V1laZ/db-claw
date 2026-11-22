@@ -293,12 +293,20 @@ impl TableDelegate for GridDelegate {
                         }),
                 )
             })
-            .child(div().font_semibold().truncate().child(meta.name.clone()))
+            // The name is what you look for: the brighter colour. The type is
+            // secondary and keeps the header's dimmer one.
+            .child(
+                div()
+                    .font_semibold()
+                    .text_color(cx.theme().muted_foreground)
+                    .truncate()
+                    .child(meta.name.clone()),
+            )
             .when(!meta.type_name.is_empty(), |this| {
                 this.child(
                     div()
                         .text_xs()
-                        .text_color(cx.theme().muted_foreground)
+                        .text_color(cx.theme().table_head_foreground)
                         .truncate()
                         .child(meta.type_name.clone()),
                 )
