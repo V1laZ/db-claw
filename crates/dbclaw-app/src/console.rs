@@ -346,7 +346,7 @@ impl ConsoleView {
                 .child(if self.running.is_some() { "Running…" } else { "Run a query with ⌘↵" })
                 .into_any_element()
         } else if has_grid {
-            div().flex_1().min_h_0().child(DataTable::new(&self.table).stripe(true).bordered(false)).into_any_element()
+            div().flex_1().min_h_0().child(DataTable::new(&self.table).bordered(false)).into_any_element()
         } else {
             v_flex()
                 .flex_1()

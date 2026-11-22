@@ -21,6 +21,14 @@ use crate::util::single_line;
 
 /// Horizontal padding inside data cells.
 const CELL_PAD: Pixels = px(8.);
+/// Group name of a row, for hover styling of its cells.
+const ROW_GROUP: &str = "dbclaw-grid-row";
+
+/// The theme's table hover colour. The table's own hover paints the full row
+/// width, so the theme token is cleared (see `main::tune_theme`) and cells
+/// paint this instead.
+pub struct GridHover(pub Hsla);
+impl Global for GridHover {}
 
 /// Max characters drawn per cell (the full value stays in memory).
 const CELL_DISPLAY_CHARS: usize = 300;
@@ -219,6 +227,7 @@ impl TableDelegate for GridDelegate {
             let digits = (self.row_offset + self.set.rows.len()).max(1).to_string().len();
             return Column::new("#", "#")
                 .width(px(digits as f32 * 8.0 + 20.0))
+                .paddings(Edges { top: px(0.), bottom: px(0.), left: px(0.), right: CELL_PAD })
                 .fixed_left()
                 .resizable(false)
                 .movable(false)
@@ -326,11 +335,29 @@ impl TableDelegate for GridDelegate {
     ) -> impl IntoElement {
         let theme = cx.theme();
         let deleted = self.deleted.contains(&row_ix);
+        let pending = col_ix > 0 && self.edits.contains_key(&(row_ix, col_ix - 1));
+        let hover = cx.try_global::<GridHover>().map(|h| h.0).unwrap_or(theme.muted);
+        // Row decoration drawn per cell (stripe, row line, hover, edit tints),
+        // so it ends at the last column instead of spanning the whole width.
+        // It reaches into the column's right padding; the content and the
+        // table's selection overlay draw on top of it.
+        let layer = div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left_0()
+            .right(-CELL_PAD)
+            .border_b_1()
+            .border_color(theme.table_row_border)
+            .when(row_ix % 2 == 1, |this| this.bg(theme.tokens.table_even))
+            .when(pending, |this| this.bg(theme.warning.opacity(0.18)))
+            .when(deleted, |this| this.bg(theme.danger.opacity(0.12)))
+            .when(!pending && !deleted, |this| this.group_hover(ROW_GROUP, |s| s.bg(hover)));
+        let frame = div().relative().w_full().h_full().flex().items_center().child(layer);
         if col_ix == 0 {
-            return div()
-                .w_full()
+            return frame
+                .justify_end()
                 .text_xs()
-                .text_right()
                 .text_color(if deleted { theme.danger } else { theme.muted_foreground })
                 .child(SharedString::from((self.row_offset + row_ix + 1).to_string()))
                 .into_any_element();
@@ -338,35 +365,26 @@ impl TableDelegate for GridDelegate {
         let data_col = col_ix - 1;
         if let Some(editor) = &self.editor
             && editor.row == row_ix && editor.col == data_col {
-                return div()
-                    .w_full()
-                    .h_full()
-                    .flex()
-                    .items_center()
+                return frame
                     .border_l_1()
-                    .border_color(cx.theme().table_row_border)
+                    .border_color(theme.table_row_border)
                     .child(Input::new(&editor.input).xsmall().appearance(false))
                     .into_any_element();
             }
-        let pending = self.edits.contains_key(&(row_ix, data_col));
         let cell = self.cell(row_ix, data_col).cloned().unwrap_or(Cell::Missing);
         let follow = self
             .on_follow
             .clone()
             .filter(|_| self.set.columns.get(data_col).is_some_and(|m| m.references.is_some()));
-        let base = div()
-            .w_full()
-            .h_full()
-            .flex()
-            .items_center()
-            .overflow_hidden()
+        // No overflow clipping here: it would cut the layer short of the
+        // right padding. Text clips in its own element below.
+        let base = frame
             // Vertical divider between columns (the cell's left edge).
             .pl(CELL_PAD)
             .border_l_1()
             .border_color(theme.table_row_border)
             .whitespace_nowrap()
-            .when(pending, |this| this.bg(theme.warning.opacity(0.18)))
-            .when(deleted, |this| this.bg(theme.danger.opacity(0.12)).line_through());
+            .when(deleted, |this| this.line_through());
         let el = match cell {
             Cell::Missing => base,
             Cell::Null => base
@@ -414,11 +432,22 @@ impl TableDelegate for GridDelegate {
                     None => base
                         .when(kind.is_right_aligned(), |this| this.justify_end())
                         .when_some(color, |this, c| this.text_color(c))
-                        .child(text),
+                        .child(div().min_w_0().overflow_hidden().child(text)),
                 }
             }
         };
         el.into_any_element()
+    }
+
+    fn render_tr(
+        &mut self,
+        row_ix: usize,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) -> Stateful<Div> {
+        // The table draws a full-width line under each row; cells draw their
+        // own (see `render_td`) so lines end at the last column.
+        div().id(("row", row_ix)).group(ROW_GROUP).border_b_0()
     }
 
     fn render_empty(

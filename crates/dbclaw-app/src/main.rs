@@ -64,6 +64,17 @@ fn key_bindings() -> Vec<KeyBinding> {
     ]
 }
 
+/// Adjustments on top of the stock theme; run after every theme change.
+fn tune_theme(cx: &mut App) {
+    // The grid paints row hover per cell so it ends at the last column;
+    // the table's own (full-width) hover is switched off.
+    let hover: Hsla = Theme::global(cx).tokens.table_hover.into();
+    if hover.a > 0. {
+        cx.set_global(grid::GridHover(hover));
+    }
+    Theme::global_mut(cx).tokens.table_hover = gpui_kit::transparent_black().into();
+}
+
 fn main() {
     gpui_kit::application()
         .with_assets(gpui_kit::assets::AllAssets)
@@ -73,6 +84,7 @@ fn main() {
             // keep a windowless app in the Dock).
             cx.set_quit_mode(QuitMode::LastWindowClosed);
             Theme::sync_system_appearance(None, cx);
+            tune_theme(cx);
             cx.bind_keys(key_bindings());
             cx.on_action(|_: &Quit, cx| cx.quit());
             cx.set_menus(vec![
@@ -117,6 +129,7 @@ fn main() {
                 window
                     .observe_window_appearance(|window, cx| {
                         Theme::sync_system_appearance(Some(window), cx);
+                        tune_theme(cx);
                     })
                     .detach();
                 cx.new(|cx| workspace::Workspace::new(window, cx))
