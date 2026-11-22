@@ -51,13 +51,17 @@ codesign --force --deep --sign - "$app"
 COPYFILE_DISABLE=1 tar -C "$stage" --no-xattrs -czf "$out_dir/$name.app.tar.gz" "DB Claw.app" 2>/dev/null \
   || COPYFILE_DISABLE=1 tar -C "$stage" -czf "$out_dir/$name.app.tar.gz" "DB Claw.app"
 
-# Installer disk image: the app plus an Applications shortcut.
-dmg_root="$stage/dmg"
-mkdir -p "$dmg_root"
-ditto --norsrc --noextattr --noqtn "$app" "$dmg_root/DB Claw.app"
-ln -s /Applications "$dmg_root/Applications"
+# Installer disk image: background, app on the left, Applications on the
+# right (layout in packaging/macos/). dmgbuild writes the Finder layout
+# directly, so it works headless on CI.
+dmgbuild=${DMGBUILD:-}
+if [[ -z "$dmgbuild" ]]; then
+  python3 -m venv "$stage/venv"
+  "$stage/venv/bin/pip" install -q --disable-pip-version-check "dmgbuild==1.6.7"
+  dmgbuild="$stage/venv/bin/dmgbuild"
+fi
 rm -f "$out_dir/$name.dmg"
-hdiutil create -quiet -volname "DB Claw" -srcfolder "$dmg_root" -fs HFS+ -format UDZO -ov "$out_dir/$name.dmg"
+"$dmgbuild" -s "$root/packaging/macos/dmg-settings.py" -D app="$app" -D root="$root" "DB Claw" "$out_dir/$name.dmg" >/dev/null
 
 echo "$out_dir/$name.dmg"
 echo "$out_dir/$name.app.tar.gz"

@@ -1,0 +1,31 @@
+<!doctype html>
+<!-- Source of dmg-background.tiff (see scripts/render-dmg-background.sh).
+     660x400 points; icons sit at (170,168) and (490,168), 128 px. Finder draws
+     the labels black on a background picture (in dark mode too), so the
+     icons sit on light tiles. -->
+<html><head><meta charset="utf-8"><style>
+  html,body{margin:0;width:660px;height:400px;overflow:hidden}
+  body{font-family:-apple-system,"SF Pro Text","Helvetica Neue",sans-serif;
+    background:
+      radial-gradient(520px 300px at 50% -40px, rgba(56,189,248,.20), transparent 70%),
+      radial-gradient(420px 260px at 100% 110%, rgba(251,113,133,.16), transparent 70%),
+      linear-gradient(180deg,#141c33 0%,#0b1020 100%);}
+  .card{position:absolute;top:78px;width:196px;height:206px;border-radius:30px;
+    background:linear-gradient(180deg,#f4f7fc 0%,#e3e9f3 100%);
+    box-shadow:0 1px 0 rgba(255,255,255,.9) inset,0 0 0 1px rgba(255,255,255,.25),0 22px 50px rgba(0,0,0,.55);}
+  .a{left:72px} .b{left:392px}
+  .arrow{position:absolute;left:283px;top:156px}
+  .title{position:absolute;top:26px;width:100%;text-align:center;color:#e6ecf8;
+    font-size:15px;font-weight:600;letter-spacing:.2px}
+  .hint{position:absolute;top:322px;width:100%;text-align:center;color:#9aa6c0;font-size:12.5px;line-height:1.5}
+  .hint b{color:#cfd8ea;font-weight:600}
+</style></head><body>
+  <div class="title">Install DB Claw</div>
+  <div class="card a"></div><div class="card b"></div>
+  <svg class="arrow" width="94" height="48" viewBox="0 0 94 48">
+    <defs><linearGradient id="g" gradientUnits="userSpaceOnUse" x1="6" y1="0" x2="82" y2="0"><stop offset="0" stop-color="#7dd3fc"/><stop offset="1" stop-color="#fb7185"/></linearGradient></defs>
+    <path d="M6 24 H76" stroke="url(#g)" stroke-width="6" stroke-linecap="round" fill="none"/>
+    <path d="M64 10 L82 24 L64 38" stroke="#fb7185" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  </svg>
+  <div class="hint">Drag <b>DB Claw</b> onto <b>Applications</b>, then open it from Launchpad or Spotlight.</div>
+</body></html>
