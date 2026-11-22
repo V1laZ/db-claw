@@ -1460,6 +1460,16 @@ impl Render for TableView {
         if let Some(hint) = self.pending_placeholder.take() {
             self.filter_input.update(cx, |s, cx| s.set_placeholder(hint, window, cx));
         }
+        // The striped table sizes its filler rows (below the last row) from the
+        // previous frame's layout, so a table that hasn't been laid out yet
+        // (e.g. a tab just opened from a reference) draws none until something
+        // else redraws it. Redraw it once more after its first layout.
+        let table_height =
+            self.table.read(cx).vertical_scroll_handle.0.borrow().base_handle.bounds().size.height;
+        if table_height <= px(0.) {
+            let table = self.table.clone();
+            window.on_next_frame(move |_, cx| table.update(cx, |_, cx| cx.notify()));
+        }
         let theme = cx.theme().clone();
         let d = self.table.read(cx).delegate();
         let pending = d.change_count();
