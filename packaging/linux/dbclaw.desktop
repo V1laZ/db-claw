@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=DB Claw
+GenericName=Database Manager
+Comment=Fast database manager for PostgreSQL and MongoDB
+Exec=dbclaw
+Icon=dbclaw
+Categories=Development;Database;
+Keywords=postgres;postgresql;mongodb;sql;database;
+Terminal=false
+StartupWMClass=dbclaw

@@ -7,6 +7,7 @@
 
 mod mongo;
 mod pg;
+pub mod updates;
 
 use std::future::Future;
 use std::sync::{Arc, OnceLock};

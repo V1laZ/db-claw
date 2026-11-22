@@ -14,6 +14,7 @@ mod record_dialog;
 mod state;
 mod store;
 mod table_view;
+mod updater;
 mod util;
 mod workspace;
 
@@ -75,7 +76,11 @@ fn main() {
                 Menu {
                     name: "DB Claw".into(),
                     disabled: false,
-                    items: vec![MenuItem::action("Quit DB Claw", Quit)],
+                    items: vec![
+                        MenuItem::action("Check for Updates…", CheckForUpdates),
+                        MenuItem::separator(),
+                        MenuItem::action("Quit DB Claw", Quit),
+                    ],
                 },
                 Menu {
                     name: "File".into(),
@@ -101,6 +106,8 @@ fn main() {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions { title: Some("DB Claw".into()), ..Default::default() }),
                 window_min_size: Some(size(px(720.), px(480.))),
+                // Matches the Linux .desktop file (taskbar icon, grouping).
+                app_id: Some("dbclaw".into()),
                 ..Default::default()
             };
             let (window, workspace) = gpui_kit::open_window(options, cx, |window, cx| {
@@ -112,6 +119,7 @@ fn main() {
                 cx.new(|cx| workspace::Workspace::new(window, cx))
             })
             .expect("failed to open the main window");
+            updater::init(window, cx);
             if control::enabled() {
                 control::start(workspace, window, cx);
             }

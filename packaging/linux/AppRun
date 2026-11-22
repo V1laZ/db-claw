@@ -1,0 +1,8 @@
+#!/bin/sh
+# AppImage entry point. `dbclaw-ctl` is reachable as `<AppImage> ctl …`.
+here="$(dirname "$(readlink -f "$0")")"
+if [ "$1" = "ctl" ]; then
+  shift
+  exec "$here/usr/bin/dbclaw-ctl" "$@"
+fi
+exec "$here/usr/bin/dbclaw" "$@"

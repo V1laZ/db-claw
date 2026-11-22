@@ -51,3 +51,31 @@ pub fn save_connections(connections: &[ConnectionConfig]) -> Result<()> {
     std::fs::rename(&tmp, &target)?;
     Ok(())
 }
+
+/// `settings.json` next to `connections.json`. Missing keys take defaults,
+/// unknown keys are ignored (the file is meant to be edited by hand).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    /// Look for updates in the background (shortly after start, then daily).
+    pub check_for_updates: bool,
+    /// `stable` (default) or `beta`.
+    pub update_channel: String,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings { check_for_updates: true, update_channel: "stable".into() }
+    }
+}
+
+pub fn load_settings() -> Settings {
+    let path = config_dir().join("settings.json");
+    match std::fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
+            eprintln!("db-claw: ignoring {}: {e}", path.display());
+            Settings::default()
+        }),
+        Err(_) => Settings::default(),
+    }
+}

@@ -9,3 +9,4 @@ pub mod model;
 pub mod mongo_refs;
 pub mod mongo_shell;
 pub mod sql;
+pub mod update;

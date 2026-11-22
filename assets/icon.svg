@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c2740"/>
+      <stop offset="1" stop-color="#070a14"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".22"/>
+      <stop offset=".25" stop-color="#ffffff" stop-opacity=".04"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity=".03"/>
+    </linearGradient>
+    <linearGradient id="top" gradientUnits="userSpaceOnUse" x1="0" y1="-100" x2="480" y2="100">
+      <stop offset="0" stop-color="#e0f2fe"/>
+      <stop offset="1" stop-color="#7dd3fc"/>
+    </linearGradient>
+    <linearGradient id="blue" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="560" y2="0">
+      <stop offset="0" stop-color="#7dd3fc"/>
+      <stop offset=".55" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#0ea5e9"/>
+    </linearGradient>
+    <linearGradient id="rose" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="560" y2="0">
+      <stop offset="0" stop-color="#fda4af"/>
+      <stop offset=".6" stop-color="#fb7185"/>
+      <stop offset="1" stop-color="#f43f5e"/>
+    </linearGradient>
+  </defs>
+  <!-- macOS-style rounded tile (824x824, transparent margin) -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <rect x="103" y="103" width="818" height="818" rx="182" fill="none" stroke="url(#rim)" stroke-width="6"/>
+  <!-- database stack whose layers sweep out into claw tips -->
+  <g transform="translate(512 512) rotate(-8) scale(1.1) translate(-266 -262)">
+    <ellipse cx="240" cy="98" rx="240" ry="98" fill="url(#top)"/>
+    <path transform="translate(0 232)" fill="url(#blue)" d="M0 -70 V4 C0 76 120 120 240 120 C400 120 530 46 580 -110 C506 0 376 40 240 40 C140 40 44 6 0 -70 Z"/>
+    <path transform="translate(0 398)" fill="url(#rose)" d="M0 -70 V4 C0 76 120 120 240 120 C400 120 530 46 580 -110 C506 0 376 40 240 40 C140 40 44 6 0 -70 Z"/>
+  </g>
+</svg>

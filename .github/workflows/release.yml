@@ -68,26 +68,37 @@ jobs:
 
       - name: Package (macOS)
         if: runner.os == 'macOS'
-        run: scripts/package-macos.sh target/${{ matrix.target }}/release ${{ steps.version.outputs.version }} dist/${{ steps.version.outputs.archive }}.zip
+        # .dmg to install, .app.tar.gz for in-app updates.
+        run: scripts/package-macos.sh target/${{ matrix.target }}/release ${{ steps.version.outputs.version }} dist ${{ steps.version.outputs.archive }}
 
       - name: Package (Linux)
         if: runner.os == 'Linux'
+        # .AppImage (installs + in-app updates) and a plain .tar.gz.
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          APPIMAGETOOL: ${{ runner.temp }}/appimagetool
         run: |
-          dir=${{ steps.version.outputs.archive }}
-          mkdir -p "dist/$dir"
-          cp target/${{ matrix.target }}/release/dbclaw target/${{ matrix.target }}/release/dbclaw-ctl README.md "dist/$dir/"
-          tar -C dist -czf "dist/$dir.tar.gz" "$dir"
-          rm -rf "dist/$dir"
+          curl -fsSL -o "$APPIMAGETOOL" https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          chmod +x "$APPIMAGETOOL"
+          scripts/package-linux.sh target/${{ matrix.target }}/release dist ${{ steps.version.outputs.archive }}
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
+        # Inno Setup installer (installs + in-app updates) and a portable zip.
         shell: pwsh
         run: |
-          $dir = "${{ steps.version.outputs.archive }}"
-          New-Item -ItemType Directory -Force -Path "dist/$dir" | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/dbclaw.exe", "target/${{ matrix.target }}/release/dbclaw-ctl.exe", "README.md" "dist/$dir/"
-          Compress-Archive -Path "dist/$dir" -DestinationPath "dist/$dir.zip"
-          Remove-Item -Recurse -Force "dist/$dir"
+          $v = "${{ steps.version.outputs.version }}"
+          $numeric = ($v -split '-')[0]
+          $archive = "${{ steps.version.outputs.archive }}"
+          $bin = (Resolve-Path "target/${{ matrix.target }}/release").Path
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $out = (Resolve-Path dist).Path
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DAppVersion=$v" "/DNumericVersion=$numeric" "/DBinDir=$bin" "/DOutDir=$out" "/DOutName=$archive-setup" packaging\windows\dbclaw.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+          New-Item -ItemType Directory -Force -Path "dist/$archive" | Out-Null
+          Copy-Item "$bin/dbclaw.exe", "$bin/dbclaw-ctl.exe", "README.md", "LICENSE" "dist/$archive/"
+          Compress-Archive -Path "dist/$archive" -DestinationPath "dist/$archive-portable.zip"
+          Remove-Item -Recurse -Force "dist/$archive"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -108,6 +119,29 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Update manifest (latest.json)
+        # Signs each update artifact with UPDATE_SIGNING_KEY (Ed25519); the app
+        # only installs files signed by a key in dbclaw_core::update::TRUSTED_KEYS.
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "$UPDATE_SIGNING_KEY" ]; then echo "::error::UPDATE_SIGNING_KEY secret is missing (run scripts/setup-update-key.sh)"; exit 1; fi
+          v="${GITHUB_REF_NAME#v}"
+          a="db-claw-v$v"
+          cargo run --release --locked -q -p dbclaw-release -- manifest \
+            --version "$v" \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME" \
+            --notes-file .github/release-notes.md \
+            --notes-url "https://github.com/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME" \
+            --date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --artifact "macos-arm64=app-tarball=dist/$a-macos-arm64.app.tar.gz" \
+            --artifact "linux-x86_64=appimage=dist/$a-linux-x86_64.AppImage" \
+            --artifact "windows-x86_64=installer=dist/$a-windows-x86_64-setup.exe" \
+            > dist/latest.json
+          cat dist/latest.json
+
       - name: Checksums
         run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
 
@@ -115,7 +149,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
+          prerelease=""
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then prerelease="--prerelease"; fi
+          gh release create "$GITHUB_REF_NAME" dist/* $prerelease \
             --repo "$GITHUB_REPOSITORY" \
             --title "DB Claw $GITHUB_REF_NAME" \
             --notes-file .github/release-notes.md

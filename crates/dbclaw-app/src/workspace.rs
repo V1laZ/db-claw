@@ -426,6 +426,22 @@ impl Workspace {
                     .child(shortcut("⌘S", "Save staged changes"))
                     .child(shortcut("⌘B", "Toggle sidebar")),
             )
+            .child(
+                h_flex()
+                    .mt_6()
+                    .gap_2()
+                    .text_xs()
+                    .text_color(theme.muted_foreground)
+                    .child(format!("Version {}", crate::updater::current_version()))
+                    .child("·")
+                    .child(
+                        Button::new("welcome-check-updates")
+                            .ghost()
+                            .xsmall()
+                            .label("Check for updates")
+                            .on_click(|_, _, cx| crate::updater::check(true, cx)),
+                    ),
+            )
     }
 }
 

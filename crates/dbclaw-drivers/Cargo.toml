@@ -17,6 +17,7 @@ postgres-native-tls = "0.5"
 native-tls = "0.2"
 mongodb = "3"
 futures-util = "0.3"
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "json", "query", "http2", "system-proxy"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

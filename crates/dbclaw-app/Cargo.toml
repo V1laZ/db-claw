@@ -38,6 +38,9 @@ default = ["screenshots"]
 # doesn't render to images on Linux yet).
 screenshots = ["dep:gpui-pre", "dep:gpui-pre-platform"]
 
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 raw-window-handle = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSView", "NSWindow", "NSResponder"] }

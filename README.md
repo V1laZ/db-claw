@@ -18,9 +18,30 @@ A fast, native database manager for **PostgreSQL** and **MongoDB**, written in R
 
 ## Download
 
-Builds for macOS (Apple Silicon), Linux and Windows are on the
-[Releases](../../releases) page. See the release notes for first-launch tips (the apps aren't
-notarized / code-signed yet).
+Get the latest build from the [Releases](../../releases/latest) page:
+
+| Platform | Install | `dbclaw-ctl` |
+|---|---|---|
+| macOS (Apple Silicon) | `…-macos-arm64.dmg`: drag **DB Claw** to Applications | `/Applications/DB Claw.app/Contents/MacOS/dbclaw-ctl` (symlink it onto your `PATH`) |
+| Windows x86_64 | `…-windows-x86_64-setup.exe`: per-user install, no admin rights | added to `PATH` by the installer |
+| Linux x86_64 | `…-linux-x86_64.AppImage`: `chmod +x` and run | `./DB-Claw.AppImage ctl …` |
+
+Portable builds (`…-windows-x86_64-portable.zip`, `…-linux-x86_64.tar.gz`) are there too, but
+they don't update themselves. The apps aren't notarized or code-signed yet: on macOS,
+right-click → **Open** the first time; on Windows, SmartScreen → *More info* → *Run anyway*.
+
+### Updates
+
+Installed copies check `https://dbclaw.vilaz.dev` shortly after start and then once a day
+(**DB Claw → Check for Updates…** or the link on the start screen checks right away). A newer
+version is downloaded in the background and installed when you click **Restart to update**.
+Every update file is signed in CI (Ed25519); the app verifies the signature and SHA-256 against
+keys built into it before installing anything. The check sends only the platform, the current
+version and the channel.
+
+Turn automatic checks off with `"check_for_updates": false` in `settings.json` (next to
+`connections.json`), or `DBCLAW_NO_UPDATE_CHECK=1`. `"update_channel": "beta"` also offers
+pre-releases.
 
 ## Quick start
 

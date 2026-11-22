@@ -4,6 +4,7 @@ gpui_kit::actions!(
     dbclaw,
     [
         Quit,
+        CheckForUpdates,
         NewConnection,
         NewConsole,
         CloseTab,
