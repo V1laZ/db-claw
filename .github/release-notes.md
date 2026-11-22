@@ -1,13 +1,16 @@
-DB Claw now comes with proper installers and updates itself.
+Grid polish and fixes for macOS.
 
 ## What's new
 
-- **Installers**: a `.dmg` for macOS, a per-user setup wizard for Windows (no admin rights, Start menu entry, uninstaller, `dbclaw-ctl` on `PATH`) and an AppImage for Linux.
-- **In-app updates**: DB Claw checks for new versions daily, downloads them in the background and installs on **Restart to update**. Updates are signed and verified before anything is installed. Turn it off with `"check_for_updates": false` in `settings.json`.
-- **New app icon.**
-- **Automation on Windows**: `dbclaw-ctl` and the MCP server now work on Windows too (named pipe, owner-only), including from WSL.
-- **Screenshots** for agents are rendered by the app itself (macOS and Windows), even when the window is covered.
-- Windows binaries no longer need the Visual C++ runtime.
+- **Tables end where your data ends**: stripes, row lines and the hover highlight stop at the last column, and the empty space below the last row stays plain.
+- **Readable column headers**: the column name is the prominent part, the data type is dimmed.
+- **Filter syntax help** is now grouped into sections with code examples and plain descriptions, instead of a wall of monospace text.
+- Long values end in "…" instead of being cut off.
+
+## Fixes
+
+- **macOS**: closing the window now quits DB Claw. Before, the app kept running without a window and couldn't be reopened from the Dock.
+- Faster grid drawing than in the first version of the new look (same speed as 0.2.0).
 
 ## Downloads
 
@@ -17,11 +20,10 @@ DB Claw now comes with proper installers and updates itself.
 | Windows x86_64 | `db-claw-v…-windows-x86_64-setup.exe` |
 | Linux x86_64 | `db-claw-v…-linux-x86_64.AppImage`: `chmod +x` and run |
 
-`*.app.tar.gz` and `latest.json` are used by in-app updates. `SHA256SUMS.txt` lists checksums.
+Already on 0.2.0? DB Claw updates itself: you'll get a **Restart to update** notification within a day, or use **DB Claw → Check for Updates…** right away.
 
 ## Notes
 
-- **macOS**: the app isn't notarized, so the first launch shows *"DB Claw" Not Opened*. Click **Done**, open **System Settings → Privacy & Security**, click **Open Anyway** next to the DB Claw message and confirm. Or run `xattr -dr com.apple.quarantine "/Applications/DB Claw.app"`. Updates installed from inside the app don't ask again.
+- **macOS**: the app isn't notarized, so the first launch of a downloaded copy shows *"DB Claw" Not Opened*. Click **Done**, open **System Settings → Privacy & Security**, click **Open Anyway** next to the DB Claw message and confirm. Or run `xattr -dr com.apple.quarantine "/Applications/DB Claw.app"`. Updates installed from inside the app don't ask again.
 - **Windows**: SmartScreen may warn about an unknown publisher → *More info* → *Run anyway*.
 - **Linux**: needs a Vulkan-capable GPU driver, plus `libxkbcommon`, `fontconfig` and `wayland`/`X11` libraries (present on typical desktops).
-- Copies from 0.1.0 don't update themselves; install 0.2.0 once and later versions arrive automatically.
