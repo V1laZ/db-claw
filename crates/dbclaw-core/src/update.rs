@@ -19,7 +19,7 @@ use sha2::{Digest as _, Sha256};
 
 /// Public keys (base64) whose signatures the app accepts. Add the new key
 /// here before rotating, keep the old one until every install has updated.
-pub const TRUSTED_KEYS: &[&str] = &["REPLACE_WITH_PUBLIC_KEY"];
+pub const TRUSTED_KEYS: &[&str] = &["mql8jd5A3FWst4dmgwKpcfNv0iBB90Y5S/gi2g8wM50="];
 
 /// Where the app asks for updates (overridable with `DBCLAW_UPDATE_URL`).
 pub const DEFAULT_UPDATE_URL: &str = "https://dbclaw.vilaz.dev";
