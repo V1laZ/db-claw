@@ -21,12 +21,20 @@ use crate::util::single_line;
 
 /// Horizontal padding inside data cells.
 const CELL_PAD: Pixels = px(8.);
+/// Height of a cell's content: the table's default (medium) row height minus
+/// the cell's 1px bottom line. Single-line values use it as line height to
+/// center vertically without a flex container (see `render_td`).
+const CELL_LINE_HEIGHT: Pixels = px(31.);
 /// Group name of a row, for hover styling of its cells.
 const ROW_GROUP: &str = "dbclaw-grid-row";
 
 /// The theme's table hover colour. The table's own hover paints the full row
 /// width, so the theme token is cleared (see `main::tune_theme`) and cells
 /// paint this instead.
+///
+/// Columns have no padding of their own: each cell is a single element that
+/// pads itself and draws the row decoration (stripe, line, hover), so rows
+/// end at the last column without extra elements per cell.
 pub struct GridHover(pub Hsla);
 impl Global for GridHover {}
 
@@ -227,7 +235,7 @@ impl TableDelegate for GridDelegate {
             let digits = (self.row_offset + self.set.rows.len()).max(1).to_string().len();
             return Column::new("#", "#")
                 .width(px(digits as f32 * 8.0 + 20.0))
-                .paddings(Edges { top: px(0.), bottom: px(0.), left: px(0.), right: CELL_PAD })
+                .paddings(Edges::all(px(0.)))
                 .fixed_left()
                 .resizable(false)
                 .movable(false)
@@ -238,8 +246,8 @@ impl TableDelegate for GridDelegate {
         let meta = &self.set.columns[data_col];
         let mut column = Column::new(SharedString::from(format!("c{data_col}")), meta.name.clone())
             .width(self.widths.get(data_col).copied().unwrap_or(px(120.)))
-            // No left padding: cells draw it themselves next to the divider.
-            .paddings(Edges { top: px(0.), bottom: px(0.), left: px(0.), right: CELL_PAD })
+            // No padding: cells draw it themselves (see `GridHover`).
+            .paddings(Edges::all(px(0.)))
             .movable(false)
             .sortable();
         if let Some((c, sort)) = self.sort
@@ -337,26 +345,22 @@ impl TableDelegate for GridDelegate {
         let deleted = self.deleted.contains(&row_ix);
         let pending = col_ix > 0 && self.edits.contains_key(&(row_ix, col_ix - 1));
         let hover = cx.try_global::<GridHover>().map(|h| h.0).unwrap_or(theme.muted);
-        // Row decoration drawn per cell (stripe, row line, hover, edit tints),
-        // so it ends at the last column instead of spanning the whole width.
-        // It reaches into the column's right padding; the content and the
-        // table's selection overlay draw on top of it.
-        let layer = div()
-            .absolute()
-            .top_0()
-            .bottom_0()
-            .left_0()
-            .right(-CELL_PAD)
+        // Row decoration drawn by the cell itself (stripe, row line, hover,
+        // edit tints), so it ends at the last column.
+        let frame = div()
+            .w_full()
+            .h_full()
+            .pr(CELL_PAD)
             .border_b_1()
             .border_color(theme.table_row_border)
             .when(row_ix % 2 == 1, |this| this.bg(theme.tokens.table_even))
             .when(pending, |this| this.bg(theme.warning.opacity(0.18)))
             .when(deleted, |this| this.bg(theme.danger.opacity(0.12)))
             .when(!pending && !deleted, |this| this.group_hover(ROW_GROUP, |s| s.bg(hover)));
-        let frame = div().relative().w_full().h_full().flex().items_center().child(layer);
         if col_ix == 0 {
             return frame
-                .justify_end()
+                .text_right()
+                .line_height(CELL_LINE_HEIGHT)
                 .text_xs()
                 .text_color(if deleted { theme.danger } else { theme.muted_foreground })
                 .child(SharedString::from((self.row_offset + row_ix + 1).to_string()))
@@ -366,6 +370,8 @@ impl TableDelegate for GridDelegate {
         if let Some(editor) = &self.editor
             && editor.row == row_ix && editor.col == data_col {
                 return frame
+                    .flex()
+                    .items_center()
                     .border_l_1()
                     .border_color(theme.table_row_border)
                     .child(Input::new(&editor.input).xsmall().appearance(false))
@@ -376,9 +382,13 @@ impl TableDelegate for GridDelegate {
             .on_follow
             .clone()
             .filter(|_| self.set.columns.get(data_col).is_some_and(|m| m.references.is_some()));
-        // No overflow clipping here: it would cut the layer short of the
-        // right padding. Text clips in its own element below.
+        // Plain values are laid out as a block (not flex) so the text gets the
+        // cell's content width and long values end in "…" before the padding;
+        // `line_height` centers them vertically.
         let base = frame
+            .overflow_hidden()
+            .text_ellipsis()
+            .line_height(CELL_LINE_HEIGHT)
             // Vertical divider between columns (the cell's left edge).
             .pl(CELL_PAD)
             .border_l_1()
@@ -404,6 +414,8 @@ impl TableDelegate for GridDelegate {
                 match follow {
                     // Foreign key: a link arrow on the left opens the referenced row.
                     Some(follow) => base
+                        .flex()
+                        .items_center()
                         .gap_1()
                         .when_some(color, |this, c| this.text_color(c))
                         .child(
@@ -430,9 +442,9 @@ impl TableDelegate for GridDelegate {
                                 .child(text),
                         ),
                     None => base
-                        .when(kind.is_right_aligned(), |this| this.justify_end())
+                        .when(kind.is_right_aligned(), |this| this.text_right())
                         .when_some(color, |this, c| this.text_color(c))
-                        .child(div().min_w_0().overflow_hidden().child(text)),
+                        .child(text),
                 }
             }
         };
