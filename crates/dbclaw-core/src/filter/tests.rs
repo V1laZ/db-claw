@@ -977,29 +977,17 @@ fn compile_mongo_helper() {
 }
 
 #[test]
-fn help_is_short() {
-    let lines = HELP.lines().count();
-    assert!((8..=12).contains(&lines), "{lines} lines");
-    // every example line in HELP should parse (sanity check of the docs)
-    for ex in [
-        "status = \"active\" and age >= 18",
-        "name ~ \"jo\"",
-        "name !~ \"test\"",
-        "email ^= \"admin\"",
-        "email $= \".cz\"",
-        "title like \"foo%\"",
-        "name matches \"^J.*n$\"",
-        "name = /^j/i",
-        "tags in [\"a\", \"b\", 3]",
-        "deleted_at is null",
-        "age between 18 and 65",
-        "profile exists",
-        "profile not exists",
-        "not (a = 1 or b = 2)",
-        "address.city = \"Prague\"",
-        "`odd name` = 1",
-        "created > date(\"2024-01-01\")",
-    ] {
-        p(ex);
+fn help_examples_parse() {
+    // Every example in the cheat sheet is a complete, valid filter.
+    let mut n = 0;
+    for (_, entries) in HELP {
+        for entry in *entries {
+            assert!(!entry.meaning.is_empty());
+            for ex in entry.examples {
+                p(ex);
+                n += 1;
+            }
+        }
     }
+    assert!(n >= 20, "{n} examples");
 }

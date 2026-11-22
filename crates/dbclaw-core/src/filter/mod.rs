@@ -77,18 +77,52 @@ pub use mongo::to_mongo;
 pub use parser::parse;
 pub use sql::to_sql;
 
-/// Short cheat-sheet for the filter bar's help popover.
-pub const HELP: &str = "\
-status = \"active\" and age >= 18      =  !=  <  <=  >  >=
-name ~ \"jo\"   name !~ \"test\"          contains / not contains (any case)
-email ^= \"admin\"   email $= \".cz\"     starts with / ends with (any case)
-title like \"foo%\"   ilike \"a_c\"       SQL wildcards: % any run, _ one char
-name matches \"^J.*n$\"   name = /^j/i    regular expression
-tags in [\"a\", \"b\", 3]   not in [...]   one of / none of
-deleted_at is null   is not null      age between 18 and 65
-profile exists   profile not exists   field is present / absent
-not (a = 1 or b = 2)                  and/&&  or/||  not/!  ( )
-address.city = \"Prague\"   `odd name` = 1   created > date(\"2024-01-01\")   _id = oid(\"…\")";
+/// One line of the filter cheat sheet: examples (each a complete filter)
+/// and what they do.
+pub struct HelpEntry {
+    pub examples: &'static [&'static str],
+    pub meaning: &'static str,
+}
+
+/// The filter bar's cheat sheet, grouped into titled sections.
+pub const HELP: &[(&str, &[HelpEntry])] = &[
+    (
+        "Compare",
+        &[
+            HelpEntry { examples: &["age >= 18", "status != \"done\""], meaning: "=  !=  <  <=  >  >=" },
+            HelpEntry { examples: &["age between 18 and 65"], meaning: "In a range, both ends included" },
+            HelpEntry { examples: &["tags in [\"a\", \"b\", 3]", "tags not in [\"x\"]"], meaning: "One of / none of" },
+            HelpEntry { examples: &["deleted_at is null", "deleted_at is not null"], meaning: "Empty / not empty" },
+        ],
+    ),
+    (
+        "Text",
+        &[
+            HelpEntry { examples: &["name ~ \"jo\"", "name !~ \"test\""], meaning: "Contains / doesn't contain, any case" },
+            HelpEntry { examples: &["email ^= \"admin\"", "email $= \".cz\""], meaning: "Starts / ends with, any case" },
+            HelpEntry { examples: &["title like \"foo%\"", "title ilike \"a_c\""], meaning: "Wildcards: % any text, _ one character" },
+            HelpEntry { examples: &["name matches \"^J.*n$\"", "name = /^j/i"], meaning: "Regular expression" },
+        ],
+    ),
+    (
+        "Fields and values",
+        &[
+            HelpEntry { examples: &["address.city = \"Prague\""], meaning: "Nested field" },
+            HelpEntry { examples: &["`odd name` = 1"], meaning: "Field name with spaces or symbols" },
+            HelpEntry { examples: &["profile exists", "profile not exists"], meaning: "Field is present / missing" },
+            HelpEntry { examples: &["created > date(\"2024-01-01\")"], meaning: "Date or timestamp" },
+            HelpEntry { examples: &["_id = oid(\"65a1f0c2e4b0a1b2c3d4e5f6\")"], meaning: "MongoDB ObjectId" },
+        ],
+    ),
+    (
+        "Combine",
+        &[
+            HelpEntry { examples: &["status = \"paid\" and total > 100"], meaning: "Both must match (also &&)" },
+            HelpEntry { examples: &["country = \"CZ\" or country = \"SK\""], meaning: "Either matches (also ||)" },
+            HelpEntry { examples: &["not (a = 1 or b = 2)"], meaning: "Negate (also !), group with ( )" },
+        ],
+    ),
+];
 
 /// A filter syntax or compilation error, with the byte range of the
 /// offending input so the UI can underline it.

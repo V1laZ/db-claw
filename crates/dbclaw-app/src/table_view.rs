@@ -1455,6 +1455,57 @@ impl Focusable for TableView {
     }
 }
 
+/// The filter bar's cheat sheet: sections of code examples with a
+/// plain-language description next to each.
+fn render_filter_help(cx: &App) -> AnyElement {
+    let theme = cx.theme().clone();
+    let mono = theme.mono_font_family.clone();
+    let chip = |ex: &'static str| {
+        div()
+            .px_1p5()
+            .py_0p5()
+            .rounded(px(4.))
+            .bg(theme.muted)
+            .text_color(theme.foreground)
+            .font_family(mono.clone())
+            .text_xs()
+            .whitespace_nowrap()
+            .child(ex)
+    };
+    v_flex()
+        .w(px(600.))
+        .p_1()
+        .gap_3()
+        .children(filter::HELP.iter().map(|(title, entries)| {
+            v_flex()
+                .gap_1p5()
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.muted_foreground)
+                        .child(SharedString::from(title.to_uppercase())),
+                )
+                .children(entries.iter().map(|entry| {
+                    h_flex()
+                        .items_center()
+                        .gap_3()
+                        .child(h_flex().w(px(330.)).flex_none().flex_wrap().gap_1().children(entry.examples.iter().map(|ex| chip(ex))))
+                        .child(div().flex_1().text_sm().text_color(theme.muted_foreground).child(entry.meaning))
+                }))
+        }))
+        .child(
+            div()
+                .pt_2()
+                .border_t_1()
+                .border_color(theme.border)
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child("Enter applies the filter. Ctrl+Space suggests fields and operators. Right-click a cell → Filter by this value."),
+        )
+        .into_any_element()
+}
+
 impl Render for TableView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(hint) = self.pending_placeholder.take() {
@@ -1504,15 +1555,7 @@ impl Render for TableView {
             .child(
                 Popover::new("filter-help")
                     .trigger(Button::new("help").ghost().small().icon(Icon::new(Lucide::CircleQuestionMark)).tooltip("Filter syntax"))
-                    .content(|_, _, cx| {
-                        div()
-                            .p_2()
-                            .text_xs()
-                            .font_family(cx.theme().mono_font_family.clone())
-                            .whitespace_normal()
-                            .max_w(px(520.))
-                            .children(filter::HELP.lines().map(|l| div().child(SharedString::from(l.to_string()))))
-                    }),
+                    .content(|_, _, cx| render_filter_help(cx)),
             )
             .child(div().w(px(1.)).h(px(18.)).bg(theme.border).mx_1())
             .child(
