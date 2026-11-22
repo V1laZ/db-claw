@@ -15,3 +15,20 @@ serde.workspace = true
 serde_json.workspace = true
 base64 = "0.22"
 dirs = "6"
+tokio = { workspace = true, features = ["net", "io-util"], optional = true }
+
+[features]
+# The app side (listener); the CLI only needs the client.
+server = ["dep:tokio"]
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["net", "io-util", "rt-multi-thread", "macros"] }

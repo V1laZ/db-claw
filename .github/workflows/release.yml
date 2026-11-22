@@ -51,7 +51,9 @@ jobs:
             libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev libvulkan-dev
 
       - name: Test
-        run: cargo test --locked -p dbclaw-core -p dbclaw-control
+        # Includes the control server: Unix socket / Windows named pipe (owner-only
+        # DACL, squatting refused) and the WSL hand-off (Linux).
+        run: cargo test --locked -p dbclaw-core -p dbclaw-control --features dbclaw-control/server
 
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }} -p dbclaw-app -p dbclaw-control

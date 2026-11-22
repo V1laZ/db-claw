@@ -6,7 +6,7 @@
 
 use std::time::{Duration, Instant};
 
-use anyhow::{Context as _, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use dbclaw_control::{Request, Response};
 use dbclaw_core::model::{ConnectionConfig, DbKind, ObjectInfo, split_url_password};
 use dbclaw_drivers::Connection;
@@ -61,69 +61,25 @@ pub fn start(workspace: Entity<Workspace>, window: AnyWindowHandle, cx: &mut App
     });
 }
 
-#[cfg(unix)]
+/// Serve the control endpoint (Unix socket / Windows named pipe, see
+/// `dbclaw_control::server`); every request is forwarded to the UI thread.
 fn listen(tx: mpsc::UnboundedSender<Job>) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
-
     let path = dbclaw_control::default_socket_path();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    if path.exists() {
-        if std::os::unix::net::UnixStream::connect(&path).is_ok() {
-            bail!("another DB Claw instance is already listening on {}", path.display());
-        }
-        std::fs::remove_file(&path)?;
-    }
-    let listener = {
-        let _guard = dbclaw_drivers::runtime().enter();
-        tokio::net::UnixListener::bind(&path).with_context(|| format!("binding {}", path.display()))?
-    };
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    eprintln!("db-claw: control socket at {}", path.display());
-
-    dbclaw_drivers::spawn(async move {
-        loop {
-            let Ok((stream, _)) = listener.accept().await else { continue };
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                let (read, write) = stream.into_split();
-                let write = std::sync::Arc::new(tokio::sync::Mutex::new(write));
-                let mut lines = tokio::io::BufReader::new(read).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    if line.trim().is_empty() {
-                        continue;
-                    }
-                    let write = write.clone();
-                    let tx = tx.clone();
-                    tokio::spawn(async move {
-                        let resp = match serde_json::from_str::<Request>(&line) {
-                            Ok(req) => {
-                                let (otx, orx) = oneshot::channel();
-                                let id = req.id;
-                                if tx.unbounded_send((req, otx)).is_err() {
-                                    Response::err(id, "app is shutting down")
-                                } else {
-                                    orx.await.unwrap_or_else(|_| Response::err(id, "request dropped"))
-                                }
-                            }
-                            Err(e) => Response::err(0, format!("invalid request: {e}")),
-                        };
-                        let mut out = serde_json::to_string(&resp).unwrap_or_default();
-                        out.push('\n');
-                        let _ = write.lock().await.write_all(out.as_bytes()).await;
-                    });
-                }
-            });
-        }
+    let handler: dbclaw_control::server::Handler = std::sync::Arc::new(move |req: Request| {
+        let tx = tx.clone();
+        Box::pin(async move {
+            let (otx, orx) = oneshot::channel();
+            let id = req.id;
+            if tx.unbounded_send((req, otx)).is_err() {
+                return Response::err(id, "app is shutting down");
+            }
+            orx.await.unwrap_or_else(|_| Response::err(id, "request dropped"))
+        })
     });
+    let _guard = dbclaw_drivers::runtime().enter();
+    dbclaw_control::server::serve(&path, handler)?;
+    eprintln!("db-claw: control endpoint at {}", path.display());
     Ok(())
-}
-
-#[cfg(not(unix))]
-fn listen(_tx: mpsc::UnboundedSender<Job>) -> Result<()> {
-    bail!("the control server is not available on this platform yet")
 }
 
 /// The native window number (macOS), used by `dbclaw-ctl screenshot`.

@@ -102,9 +102,14 @@ Start the app with the control server enabled:
 DBCLAW_CONTROL=1 cargo run --release -p dbclaw-app     # or: dbclaw --control
 ```
 
-It listens on a Unix socket readable only by your user
-(`~/Library/Application Support/DB Claw/control.sock`, or `$DBCLAW_CONTROL_SOCKET`).
-It's off by default because it can change data.
+It listens on an endpoint only your user can open, and is off by default because it can change
+data:
+
+- **macOS / Linux:** a Unix socket with `0600` permissions
+  (`~/Library/Application Support/DB Claw/control.sock` on macOS, or `$DBCLAW_CONTROL_SOCKET`).
+- **Windows:** the named pipe `\\.\pipe\dbclaw-control-<your user SID>`, with an access list that
+  allows only your account. It rejects remote clients and won't start if another process already
+  owns the name. `dbclaw-ctl.exe` also refuses a pipe that isn't served by your user.
 
 ```sh
 dbclaw-ctl state                                         # connections, tabs, errors…
@@ -130,6 +135,15 @@ window is covered).
 comes back as an image. This repository's `.mcp.json` registers it for Claude Code. For other
 clients, run `dbclaw-ctl mcp` as a stdio server.
 
+**WSL:** run the Linux `dbclaw-ctl` (or `dbclaw-ctl mcp`) inside WSL as usual. If no DB Claw is
+running *inside* WSL, it hands off to the Windows `dbclaw-ctl.exe` (through WSL's Windows
+interop), which talks to the app on the Windows side as your Windows user. `dbclaw-ctl.exe`
+is looked up via `$DBCLAW_CTL_EXE`, then the PATH (WSL appends the Windows PATH by default).
+`DBCLAW_WSL_HANDOFF=0` disables the hand-off. You can also point the MCP config at the Windows
+binary directly, e.g. `"command": "/mnt/c/Tools/db-claw/dbclaw-ctl.exe"`.
+
+`screenshot` currently works on macOS only.
+
 ## Layout
 
 ```text
@@ -152,8 +166,8 @@ docker compose up -d && DBCLAW_LIVE=1 cargo test -p dbclaw-drivers --test live
 
 Developed and tested on macOS; release builds are produced for macOS (Apple Silicon), Linux
 x86_64 and Windows x86_64 by `.github/workflows/release.yml` (push a `v*` tag). Key bindings use
-the platform modifier (⌘ on macOS, Ctrl elsewhere). The automation server currently needs Unix
-sockets (macOS/Linux), and `screenshot` uses macOS `screencapture`.
+the platform modifier (⌘ on macOS, Ctrl elsewhere). The automation server works on all three
+(Unix socket / Windows named pipe); `screenshot` uses macOS `screencapture` and is macOS-only.
 
 Saved connections, including passwords, are stored in `connections.json` in the platform
 config directory with `0600` permissions.

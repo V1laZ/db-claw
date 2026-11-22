@@ -15,9 +15,12 @@ use std::path::PathBuf;
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use base64::Engine as _;
-use dbclaw_control::{Client, METHODS, SCREENSHOT, capture_window, default_socket_path, find_method};
+#[cfg(target_os = "macos")]
+use dbclaw_control::capture_window;
+use dbclaw_control::{Client, METHODS, SCREENSHOT, default_socket_path, find_method};
 use serde_json::{Map, Value, json};
 
+#[cfg(target_os = "macos")]
 const DEFAULT_SHOT_WIDTH: u32 = 1600;
 
 fn usage() -> String {
@@ -57,6 +60,7 @@ fn parse_kv(args: &[String]) -> Result<Value> {
     Ok(Value::Object(map))
 }
 
+#[cfg(target_os = "macos")]
 fn screenshot(client: &mut Client, path: Option<PathBuf>, max_width: Option<u32>, ext: &str) -> Result<PathBuf> {
     let state = client.call("state", json!({}))?;
     // Give the app a frame to draw after the refresh triggered by `state`.
@@ -74,6 +78,11 @@ fn screenshot(client: &mut Client, path: Option<PathBuf>, max_width: Option<u32>
     Ok(path)
 }
 
+#[cfg(not(target_os = "macos"))]
+fn screenshot(_client: &mut Client, _path: Option<PathBuf>, _max_width: Option<u32>, _ext: &str) -> Result<PathBuf> {
+    bail!("screenshots are only supported on macOS for now")
+}
+
 fn main() {
     if let Err(e) = real_main() {
         eprintln!("error: {e:#}");
@@ -84,17 +93,35 @@ fn main() {
 fn real_main() -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let mut socket = default_socket_path();
+    let mut explicit_socket = false;
     if args.first().map(String::as_str) == Some("--socket") {
         if args.len() < 2 {
             bail!("--socket needs a path");
         }
         socket = PathBuf::from(args.remove(1));
         args.remove(0);
+        explicit_socket = true;
     }
     let Some(cmd) = args.first().cloned() else {
         print!("{}", usage());
         return Ok(());
     };
+    // Inside WSL with the app running on Windows: forward to dbclaw-ctl.exe.
+    #[cfg(target_os = "linux")]
+    if !explicit_socket && !matches!(cmd.as_str(), "help" | "--help" | "-h") && wsl::should_hand_off(&socket) {
+        if let Some(exe) = wsl::windows_ctl() {
+            std::process::exit(wsl::run(&exe, &args)?);
+        }
+        if !socket.exists() {
+            bail!(
+                "no DB Claw is listening inside WSL ({}), and dbclaw-ctl.exe wasn't found to reach the Windows \
+                 app. Put the folder with dbclaw-ctl.exe on your Windows PATH or set DBCLAW_CTL_EXE.",
+                socket.display()
+            );
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = explicit_socket;
     let rest = &args[1..];
     match cmd.as_str() {
         "help" | "--help" | "-h" => {
@@ -132,6 +159,65 @@ fn real_main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&result)?);
             Ok(())
         }
+    }
+}
+
+/// WSL → Windows hand-off. A Linux process in WSL2 can't open Windows named
+/// pipes, but it can run Windows executables (WSL interop), whose stdio is
+/// bridged. So when no DB Claw listens inside WSL, the Linux CLI runs
+/// `dbclaw-ctl.exe` with the same arguments; it connects to the Windows app's
+/// pipe as the Windows user. Set `DBCLAW_WSL_HANDOFF=0` to disable.
+#[cfg(target_os = "linux")]
+mod wsl {
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    use anyhow::{Context as _, Result};
+
+    pub fn is_wsl() -> bool {
+        std::env::var_os("WSL_DISTRO_NAME").is_some()
+            || Path::new("/proc/sys/fs/binfmt_misc/WSLInterop").exists()
+            || std::fs::read_to_string("/proc/sys/kernel/osrelease")
+                .is_ok_and(|r| r.to_lowercase().contains("microsoft"))
+    }
+
+    /// In WSL, hand off unless an app inside WSL is listening.
+    pub fn should_hand_off(socket: &Path) -> bool {
+        if std::env::var("DBCLAW_WSL_HANDOFF").is_ok_and(|v| v == "0") || !is_wsl() {
+            return false;
+        }
+        std::os::unix::net::UnixStream::connect(socket).is_err()
+    }
+
+    /// `$DBCLAW_CTL_EXE`, else `dbclaw-ctl.exe` on the PATH (WSL appends the
+    /// Windows PATH by default).
+    pub fn windows_ctl() -> Option<PathBuf> {
+        if let Some(p) = std::env::var_os("DBCLAW_CTL_EXE").map(PathBuf::from) {
+            return p.is_file().then_some(p);
+        }
+        std::env::split_paths(&std::env::var_os("PATH")?)
+            .map(|dir| dir.join("dbclaw-ctl.exe"))
+            .find(|p| p.is_file())
+    }
+
+    /// `/home/me/shot.png` → `\\wsl.localhost\Ubuntu\home\me\shot.png`
+    fn to_windows_path(path: &str) -> Result<String> {
+        let abs = std::path::absolute(path)?;
+        let out = Command::new("wslpath").arg("-w").arg(&abs).output().context("running wslpath")?;
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    pub fn run(exe: &Path, args: &[String]) -> Result<i32> {
+        let mut args = args.to_vec();
+        // A screenshot path is written by the Windows process.
+        if args.first().map(String::as_str) == Some("screenshot") && args.len() > 1 {
+            args[1] = to_windows_path(&args[1])?;
+        }
+        let status = Command::new(exe)
+            .args(&args)
+            .status()
+            .with_context(|| format!("running {}", exe.display()))?;
+        Ok(status.code().unwrap_or(1))
     }
 }
 

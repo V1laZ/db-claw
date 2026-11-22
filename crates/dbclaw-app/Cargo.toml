@@ -12,7 +12,7 @@ path = "src/main.rs"
 [dependencies]
 dbclaw-core = { path = "../dbclaw-core" }
 dbclaw-drivers = { path = "../dbclaw-drivers" }
-dbclaw-control = { path = "../dbclaw-control" }
+dbclaw-control = { path = "../dbclaw-control", features = ["server"] }
 gpui-kit = { version = "0.10", features = ["tree-sitter-sql", "tree-sitter-javascript"] }
 anyhow.workspace = true
 serde.workspace = true

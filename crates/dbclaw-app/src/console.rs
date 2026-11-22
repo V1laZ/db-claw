@@ -514,19 +514,6 @@ impl Render for ConsoleView {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::block_at;
-
-    #[test]
-    fn blocks() {
-        let t = "db.a.find()\n\ndb.b.find({\n  x: 1\n})\n\n\ndb.c.count()";
-        assert_eq!(block_at(t, 0), "db.a.find()");
-        assert_eq!(block_at(t, 15), "db.b.find({\n  x: 1\n})");
-        assert_eq!(block_at(t, t.len()), "db.c.count()");
-        assert_eq!(block_at("", 0), "");
-    }
-}
 
 // ---- automation API ----------------------------------------------------------
 
@@ -585,5 +572,19 @@ impl ConsoleView {
             "elapsed_ms": self.last_elapsed.map(|e| e.as_secs_f64() * 1000.0),
             "result_sets": sets,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::block_at;
+
+    #[test]
+    fn blocks() {
+        let t = "db.a.find()\n\ndb.b.find({\n  x: 1\n})\n\n\ndb.c.count()";
+        assert_eq!(block_at(t, 0), "db.a.find()");
+        assert_eq!(block_at(t, 15), "db.b.find({\n  x: 1\n})");
+        assert_eq!(block_at(t, t.len()), "db.c.count()");
+        assert_eq!(block_at("", 0), "");
     }
 }

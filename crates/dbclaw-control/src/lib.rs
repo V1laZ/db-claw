@@ -1,7 +1,8 @@
 //! Automation protocol for a running DB Claw app.
 //!
 //! The app (started with `DBCLAW_CONTROL=1` or `--control`) listens on a
-//! Unix socket readable only by the current user. Messages are JSON lines:
+//! local endpoint only the current user can open — a Unix socket on macOS /
+//! Linux, a named pipe on Windows. Messages are JSON lines:
 //!
 //! ```text
 //! → {"id": 1, "method": "open_table", "params": {"connection": "Shop", "name": "customers"}}
@@ -11,19 +12,17 @@
 //! [`METHODS`] documents every method; the `dbclaw-ctl` binary exposes them
 //! as a CLI and as MCP tools.
 
-#[cfg(unix)]
-use std::io::{BufRead as _, BufReader, Write as _};
-#[cfg(unix)]
-use std::os::unix::net::UnixStream;
+use std::io::{BufRead as _, BufReader, Read, Write};
 use std::path::PathBuf;
-#[cfg(unix)]
-use std::time::Duration;
 
-#[cfg(unix)]
-use anyhow::anyhow;
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+#[cfg(feature = "server")]
+pub mod server;
+#[cfg(windows)]
+pub mod winsec;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Request {
@@ -52,9 +51,21 @@ impl Response {
     }
 }
 
+/// Default endpoint on Windows: `$DBCLAW_CONTROL_SOCKET`, else the named
+/// pipe `\\.\pipe\dbclaw-control-<user SID>` (one per user).
+#[cfg(windows)]
+pub fn default_socket_path() -> PathBuf {
+    if let Ok(p) = std::env::var("DBCLAW_CONTROL_SOCKET") {
+        return PathBuf::from(p);
+    }
+    let user = winsec::current_user_sid().unwrap_or_else(|_| std::env::var("USERNAME").unwrap_or_else(|_| "user".into()));
+    PathBuf::from(format!(r"\\.\pipe\dbclaw-control-{user}"))
+}
+
 /// Default socket: `$DBCLAW_CONTROL_SOCKET`, else `<config dir>/DB Claw/control.sock`
 /// (honouring `$DBCLAW_CONFIG_DIR`), or `/tmp/dbclaw-$USER.sock` when that path
 /// is too long for a Unix socket.
+#[cfg(not(windows))]
 pub fn default_socket_path() -> PathBuf {
     if let Ok(p) = std::env::var("DBCLAW_CONTROL_SOCKET") {
         return PathBuf::from(p);
@@ -72,43 +83,54 @@ pub fn default_socket_path() -> PathBuf {
     path
 }
 
-/// Blocking client for the control socket (Unix only for now; on other
-/// platforms `connect` reports that the control server isn't available).
-#[cfg(unix)]
+/// Blocking client for the control endpoint.
 pub struct Client {
-    reader: BufReader<UnixStream>,
-    writer: UnixStream,
+    reader: BufReader<Box<dyn Read + Send>>,
+    writer: Box<dyn Write + Send>,
     next_id: u64,
 }
 
-#[cfg(not(unix))]
-pub struct Client {
-    _private: (),
+fn not_running(path: &std::path::Path) -> String {
+    format!(
+        "cannot reach DB Claw at {} — start the app with DBCLAW_CONTROL=1 (or --control)",
+        path.display()
+    )
 }
 
-#[cfg(not(unix))]
 impl Client {
-    pub fn connect(_path: &std::path::Path) -> Result<Client> {
-        bail!("the DB Claw control server is only available on macOS and Linux for now")
-    }
-
-    pub fn call(&mut self, _method: &str, _params: Value) -> Result<Value> {
-        bail!("the DB Claw control server is only available on macOS and Linux for now")
-    }
-}
-
-#[cfg(unix)]
-impl Client {
+    #[cfg(unix)]
     pub fn connect(path: &std::path::Path) -> Result<Client> {
-        let stream = UnixStream::connect(path).with_context(|| {
-            format!(
-                "cannot reach DB Claw at {} — start the app with DBCLAW_CONTROL=1 (or --control)",
-                path.display()
-            )
-        })?;
-        stream.set_read_timeout(Some(Duration::from_secs(600)))?;
+        let stream = std::os::unix::net::UnixStream::connect(path).with_context(|| not_running(path))?;
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(600)))?;
         let writer = stream.try_clone()?;
-        Ok(Client { reader: BufReader::new(stream), writer, next_id: 1 })
+        Ok(Client { reader: BufReader::new(Box::new(stream)), writer: Box::new(writer), next_id: 1 })
+    }
+
+    #[cfg(windows)]
+    pub fn connect(path: &std::path::Path) -> Result<Client> {
+        const ERROR_PIPE_BUSY: i32 = 231;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let pipe = loop {
+            match std::fs::OpenOptions::new().read(true).write(true).open(path) {
+                Ok(f) => break f,
+                // All instances are momentarily taken: the server creates a new one.
+                Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => return Err(anyhow::Error::new(e).context(not_running(path))),
+            }
+        };
+        // Refuse to talk to a pipe served by another user (pipe squatting).
+        if !winsec::pipe_server_is_current_user(&pipe)? {
+            bail!("refusing to use {}: it is not served by DB Claw running as the current user", path.display());
+        }
+        let writer = pipe.try_clone()?;
+        Ok(Client { reader: BufReader::new(Box::new(pipe)), writer: Box::new(writer), next_id: 1 })
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    pub fn connect(_path: &std::path::Path) -> Result<Client> {
+        bail!("the DB Claw control server is not supported on this platform")
     }
 
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value> {
@@ -118,6 +140,7 @@ impl Client {
         let mut line = serde_json::to_string(&req)?;
         line.push('\n');
         self.writer.write_all(line.as_bytes())?;
+        self.writer.flush()?;
         let mut buf = String::new();
         loop {
             buf.clear();
@@ -384,6 +407,13 @@ pub fn find_method(name: &str) -> Option<&'static MethodSpec> {
 }
 
 /// Capture the window with the given macOS window number to `path`.
+#[cfg(not(target_os = "macos"))]
+pub fn capture_window(_window_number: u64, _path: &std::path::Path, _max_width: Option<u32>) -> Result<()> {
+    bail!("screenshots are only supported on macOS for now")
+}
+
+/// Capture the window with the given macOS window number to `path`.
+#[cfg(target_os = "macos")]
 pub fn capture_window(window_number: u64, path: &std::path::Path, max_width: Option<u32>) -> Result<()> {
     let jpeg = path.extension().is_some_and(|e| e == "jpg" || e == "jpeg");
     let status = std::process::Command::new("/usr/sbin/screencapture")
