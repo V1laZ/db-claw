@@ -21,7 +21,7 @@ DB Claw now comes with proper installers and updates itself.
 
 ## Notes
 
-- **macOS**: the app isn't notarized. On first launch, right-click **DB Claw.app** → **Open**. Updates installed from inside the app don't ask again.
+- **macOS**: the app isn't notarized, so the first launch shows *"DB Claw" Not Opened*. Click **Done**, open **System Settings → Privacy & Security**, click **Open Anyway** next to the DB Claw message and confirm. Or run `xattr -dr com.apple.quarantine "/Applications/DB Claw.app"`. Updates installed from inside the app don't ask again.
 - **Windows**: SmartScreen may warn about an unknown publisher → *More info* → *Run anyway*.
 - **Linux**: needs a Vulkan-capable GPU driver, plus `libxkbcommon`, `fontconfig` and `wayland`/`X11` libraries (present on typical desktops).
 - Copies from 0.1.0 don't update themselves; install 0.2.0 once and later versions arrive automatically.

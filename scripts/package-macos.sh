@@ -43,7 +43,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 # Ad-hoc signature (no Apple Developer ID): Gatekeeper still asks on first
-# launch of a downloaded copy — right-click → Open. In-app updates aren't
+# launch of a downloaded copy (System Settings → Privacy & Security → Open
+# Anyway). In-app updates aren't
 # quarantined, so they open without asking.
 codesign --force --deep --sign - "$app"
 

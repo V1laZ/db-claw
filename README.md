@@ -26,8 +26,14 @@ Get the latest build from the [Releases](../../releases/latest) page:
 | Windows x86_64 | `…-windows-x86_64-setup.exe`: per-user install, no admin rights | added to `PATH` by the installer |
 | Linux x86_64 | `…-linux-x86_64.AppImage`: `chmod +x` and run | `./DB-Claw.AppImage ctl …` |
 
-The apps aren't notarized or code-signed yet: on macOS,
-right-click → **Open** the first time; on Windows, SmartScreen → *More info* → *Run anyway*.
+The apps aren't notarized or code-signed yet, so the first launch needs one extra step:
+
+- **macOS**: opening the app shows *"DB Claw" Not Opened*. Click **Done**, then go to
+  **System Settings → Privacy & Security**, click **Open Anyway** next to the DB Claw message
+  and confirm. (Or run `xattr -dr com.apple.quarantine "/Applications/DB Claw.app"`.)
+- **Windows**: SmartScreen → *More info* → *Run anyway*.
+
+Updates installed from inside the app don't ask again.
 
 ### Updates
 
