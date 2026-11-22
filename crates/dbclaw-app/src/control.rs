@@ -582,6 +582,17 @@ impl Ctx {
                 })?;
                 Ok(json!({ "ok": true }))
             }
+            "capture" => {
+                // Redraw, give the frame a moment, then render it offscreen.
+                cx.update(|window, _| window.refresh())?;
+                cx.background_executor().timer(Duration::from_millis(60)).await;
+                let image = cx.update(|window, _| capture_window(window))??;
+                let max_width = p_u64(&params, "max_width").map(|w| w as u32);
+                let jpeg = matches!(p_str(&params, "format"), Some("jpg" | "jpeg"));
+                // Encoding a retina frame takes a few ms: keep it off the UI thread.
+                let (data, width, height) = io(async move { encode_image(image, max_width, jpeg) }).await?;
+                Ok(json!({ "format": if jpeg { "jpeg" } else { "png" }, "width": width, "height": height, "data": data }))
+            }
             "close_dialog" => {
                 cx.update(|window, cx| {
                     window.close_dialog(cx);
@@ -758,6 +769,47 @@ impl Ctx {
         v.as_object_mut().map(|o| o.remove("text"));
         Ok(v)
     }
+}
+
+/// Render the window's last frame to an image (offscreen: works when the
+/// window is covered, needs no screen-recording permission).
+#[cfg(feature = "screenshots")]
+fn capture_window(window: &Window) -> Result<image::RgbaImage> {
+    window.render_to_image().map_err(|e| {
+        if cfg!(target_os = "linux") {
+            anyhow!("screenshots aren't supported on Linux yet")
+        } else {
+            anyhow!("capturing the window failed: {e}")
+        }
+    })
+}
+
+#[cfg(not(feature = "screenshots"))]
+fn capture_window(_window: &Window) -> Result<image::RgbaImage> {
+    bail!("this build of DB Claw has no screenshot support (the `screenshots` feature is off)")
+}
+
+/// Downscale to `max_width` and encode as PNG or JPEG; base64 for the wire.
+fn encode_image(image: image::RgbaImage, max_width: Option<u32>, jpeg: bool) -> Result<(String, u32, u32)> {
+    use base64::Engine as _;
+    use image::imageops::FilterType;
+
+    let image = match max_width {
+        Some(w) if w > 0 && image.width() > w => {
+            let h = (image.height() as u64 * w as u64 / image.width() as u64).max(1) as u32;
+            image::imageops::resize(&image, w, h, FilterType::Triangle)
+        }
+        _ => image,
+    };
+    let (width, height) = image.dimensions();
+    let mut out = std::io::Cursor::new(Vec::new());
+    if jpeg {
+        let rgb = image::DynamicImage::ImageRgba8(image).to_rgb8();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80).encode_image(&rgb)?;
+    } else {
+        image.write_to(&mut out, image::ImageFormat::Png)?;
+    }
+    Ok((base64::engine::general_purpose::STANDARD.encode(out.into_inner()), width, height))
 }
 
 fn tab_entity_id(tab: &Tab) -> EntityId {

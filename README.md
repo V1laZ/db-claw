@@ -121,7 +121,7 @@ dbclaw-ctl follow_reference row=0 column=customer_id     # foreign key → custo
 dbclaw-ctl edit_cell row=0 column=name value='"Eva"'
 dbclaw-ctl save
 dbclaw-ctl run connection=mongo text='db.orders.aggregate([{$group: {_id: "$status", n: {$sum: 1}}}])'
-dbclaw-ctl screenshot /tmp/dbclaw.png                    # works even when the window is covered
+dbclaw-ctl screenshot /tmp/dbclaw.png                    # rendered by the app: works when covered
 dbclaw-ctl help                                          # all methods; `help <method>` for params
 ```
 
@@ -142,7 +142,9 @@ is looked up via `$DBCLAW_CTL_EXE`, then the PATH (WSL appends the Windows PATH 
 `DBCLAW_WSL_HANDOFF=0` disables the hand-off. You can also point the MCP config at the Windows
 binary directly, e.g. `"command": "/mnt/c/Tools/db-claw/dbclaw-ctl.exe"`.
 
-`screenshot` currently works on macOS only.
+`screenshot` is rendered by the app itself (offscreen), so it works when the window is covered,
+needs no screen-recording permission, and also works over the Windows pipe and from WSL. It's
+available on macOS and Windows; Linux isn't supported yet (GPUI can't render to images there).
 
 ## Layout
 
@@ -167,7 +169,7 @@ docker compose up -d && DBCLAW_LIVE=1 cargo test -p dbclaw-drivers --test live
 Developed and tested on macOS; release builds are produced for macOS (Apple Silicon), Linux
 x86_64 and Windows x86_64 by `.github/workflows/release.yml` (push a `v*` tag). Key bindings use
 the platform modifier (⌘ on macOS, Ctrl elsewhere). The automation server works on all three
-(Unix socket / Windows named pipe); `screenshot` uses macOS `screencapture` and is macOS-only.
+(Unix socket / Windows named pipe); `screenshot` works on macOS and Windows.
 
 Saved connections, including passwords, are stored in `connections.json` in the platform
 config directory with `0600` permissions.

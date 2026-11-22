@@ -1119,12 +1119,15 @@ impl TableView {
             .bg(theme.background)
             .child(Icon::new(Lucide::ListFilter).small().text_color(theme.muted_foreground))
             .child(
+                // One line, vertically centered in the box.
                 div()
                     .flex_1()
                     .min_w_0()
                     .h_full()
+                    .flex()
+                    .items_center()
                     .text_sm()
-                    .child(Editor::new(&self.filter_input).appearance(false).bordered(false).h_full()),
+                    .child(Editor::new(&self.filter_input).appearance(false).bordered(false).xsmall().py_0().h(px(20.)).w_full()),
             )
             .when(has_text, |this| {
                 this.child(

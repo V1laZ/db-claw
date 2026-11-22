@@ -20,7 +20,6 @@ use dbclaw_control::capture_window;
 use dbclaw_control::{Client, METHODS, SCREENSHOT, default_socket_path, find_method};
 use serde_json::{Map, Value, json};
 
-#[cfg(target_os = "macos")]
 const DEFAULT_SHOT_WIDTH: u32 = 1600;
 
 fn usage() -> String {
@@ -60,27 +59,41 @@ fn parse_kv(args: &[String]) -> Result<Value> {
     Ok(Value::Object(map))
 }
 
-#[cfg(target_os = "macos")]
+/// Save a screenshot of the app window. The app renders its own window
+/// (offscreen, so it works when covered and needs no permissions) and sends
+/// the image over the control channel. On macOS, an app without that ability
+/// is captured with `screencapture` instead.
 fn screenshot(client: &mut Client, path: Option<PathBuf>, max_width: Option<u32>, ext: &str) -> Result<PathBuf> {
-    let state = client.call("state", json!({}))?;
-    // Give the app a frame to draw after the refresh triggered by `state`.
-    std::thread::sleep(std::time::Duration::from_millis(60));
-    let number = state["window"]["number"]
-        .as_u64()
-        .ok_or_else(|| anyhow!("the app did not report a window number"))?;
     let path = path.unwrap_or_else(|| {
-        std::env::temp_dir().join(format!("dbclaw-{}.{ext}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0)))
+        std::env::temp_dir().join(format!(
+            "dbclaw-{}.{ext}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+        ))
     });
-    capture_window(number, &path, max_width.or(Some(DEFAULT_SHOT_WIDTH)))?;
-    Ok(path)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn screenshot(_client: &mut Client, _path: Option<PathBuf>, _max_width: Option<u32>, _ext: &str) -> Result<PathBuf> {
-    bail!("screenshots are only supported on macOS for now")
+    let max_width = max_width.or(Some(DEFAULT_SHOT_WIDTH));
+    let format = if matches!(ext, "jpg" | "jpeg") { "jpeg" } else { "png" };
+    match client.call("capture", json!({ "max_width": max_width, "format": format })) {
+        Ok(image) => {
+            let data = image["data"].as_str().ok_or_else(|| anyhow!("the app sent no image"))?;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(data).context("decoding the image")?;
+            std::fs::write(&path, bytes).with_context(|| format!("writing {}", path.display()))?;
+            Ok(path)
+        }
+        #[cfg(target_os = "macos")]
+        Err(e) if e.to_string().contains("unknown method") => {
+            let state = client.call("state", json!({}))?;
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            let number = state["window"]["number"]
+                .as_u64()
+                .ok_or_else(|| anyhow!("the app did not report a window number"))?;
+            capture_window(number, &path, max_width)?;
+            Ok(path)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 fn main() {
@@ -134,7 +147,13 @@ fn real_main() -> Result<()> {
         "mcp" => mcp::serve(socket),
         "screenshot" => {
             let mut client = Client::connect(&socket)?;
-            let path = screenshot(&mut client, rest.first().map(PathBuf::from), None, "png")?;
+            let target = rest.first().map(PathBuf::from);
+            let ext = target
+                .as_ref()
+                .and_then(|p| p.extension())
+                .map(|e| e.to_string_lossy().to_lowercase())
+                .unwrap_or_else(|| "png".into());
+            let path = screenshot(&mut client, target, None, &ext)?;
             println!("{}", path.display());
             Ok(())
         }

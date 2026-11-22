@@ -23,6 +23,20 @@ dirs = "6"
 uuid = { version = "1", features = ["v4"] }
 futures = "0.3"
 lsp-types = { version = "0.97", features = ["proposed"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+base64 = "0.22"
+# Same versions gpui-kit pins; only used to switch on `test-support`, which
+# provides offscreen render-to-image for the `screenshots` feature.
+gpui-pre = { version = "=0.3.12", features = ["test-support"], optional = true }
+
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+gpui-pre-platform = { version = "=0.3.12", default-features = false, features = ["test-support"], optional = true }
+
+[features]
+default = ["screenshots"]
+# In-app window capture for `dbclaw-ctl screenshot` (macOS and Windows; gpui
+# doesn't render to images on Linux yet).
+screenshots = ["dep:gpui-pre", "dep:gpui-pre-platform"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 raw-window-handle = "0.6"

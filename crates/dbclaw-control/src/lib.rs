@@ -395,9 +395,9 @@ pub static METHODS: &[MethodSpec] = &[
 /// Handled by `dbclaw-ctl` itself (not the app): capture the app window.
 pub static SCREENSHOT: MethodSpec = MethodSpec {
     name: "screenshot",
-    description: "Capture a PNG of the DB Claw window (works even when it is covered). Requires screen-recording permission for the calling terminal.",
+    description: "Capture an image of the DB Claw window. The app renders it itself, so it works when the window is covered and needs no screen-recording permission (macOS and Windows; not on Linux yet).",
     params: &[
-        ("path", "string", "Where to save the PNG (CLI only; MCP returns the image)", false),
+        ("path", "string", "Where to save the image, .png or .jpg (CLI only; MCP returns the image)", false),
         ("max_width", "integer", "Downscale to at most this width in pixels (default 1600)", false),
     ],
 };
