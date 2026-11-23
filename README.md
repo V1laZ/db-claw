@@ -66,6 +66,8 @@ connection dialog only blocks grid edits, not console queries).
    ```
 3. Restart Claude Code and run `/mcp`: **dbclaw** should show as connected.
 
+Updating or uninstalling stops the MCP server; run `/mcp` in Claude Code afterwards to reconnect.
+
 **Claude Code in WSL** controlling DB Claw on Windows: start the app as in step 1, then in WSL:
 ```sh
 claude mcp add --scope user dbclaw -- dbclaw-ctl.exe mcp

@@ -121,6 +121,39 @@ begin
   RegWriteExpandStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', Paths);
 end;
 
+{ Windows can't replace or delete a running .exe. `dbclaw-ctl.exe mcp` keeps running in the
+  background for as long as an AI agent (e.g. Claude Code) is open, and Restart Manager
+  (CloseApplications) only reliably closes programs with a window, so stop it ourselves.
+  It's stateless: the agent reconnects with the new version (e.g. `/mcp` in Claude Code). }
+procedure TaskKill(Params: string);
+var
+  ResultCode: Integer;
+begin
+  Exec(ExpandConstant('{sys}\taskkill.exe'), Params, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+procedure StopCtl;
+begin
+  TaskKill('/F /IM dbclaw-ctl.exe');
+  Sleep(300);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  StopCtl;
+  Result := '';
+end;
+
+function InitializeUninstall(): Boolean;
+begin
+  { Ask the app to close (like clicking its close button), then make sure it's gone. }
+  TaskKill('/IM dbclaw.exe');
+  Sleep(1500);
+  TaskKill('/F /IM dbclaw.exe');
+  StopCtl;
+  Result := True;
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usPostUninstall then

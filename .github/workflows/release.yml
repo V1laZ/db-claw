@@ -96,6 +96,13 @@ jobs:
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DAppVersion=$v" "/DNumericVersion=$numeric" "/DBinDir=$bin" "/DOutDir=$out" "/DOutName=$archive-setup" packaging\windows\dbclaw.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
 
+      - name: Test installer (Windows)
+        if: runner.os == 'Windows'
+        # Install, update and uninstall while `dbclaw-ctl mcp` runs (an AI agent keeps it
+        # running, which locks the exe).
+        shell: pwsh
+        run: packaging/windows/test-installer.ps1 -Setup "dist/${{ steps.version.outputs.archive }}-setup.exe"
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}

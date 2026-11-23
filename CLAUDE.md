@@ -79,6 +79,10 @@ Run with `DBCLAW_CONTROL=1 DBCLAW_CONFIG_DIR=<scratch>` and use `target/debug/db
 - **Mongo TLS:** the driver's rustls trusts only its bundled Mozilla roots, so company-CA
   servers failed with `UnknownIssuer`. `mongo::trust_system_roots` writes the OS trust store to
   `<cache dir>/DB Claw/system-ca.pem` and passes it as `tlsCAFile` (unless the URL sets one).
+- **Windows installer:** a running `.exe` can't be replaced or deleted, and `dbclaw-ctl.exe mcp`
+  keeps running while an agent is open. Restart Manager doesn't close windowless processes, so
+  `dbclaw.iss` stops `dbclaw-ctl.exe` before install/uninstall (and closes `dbclaw.exe` before
+  uninstall). `packaging/windows/test-installer.ps1` checks this in CI on every release build.
 - The app quits when its window closes (`QuitMode::LastWindowClosed`, also on macOS).
 
 ## Releases
