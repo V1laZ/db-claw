@@ -1,15 +1,13 @@
-Reorder tabs and connections by drag and drop; Windows updates no longer fail while an AI agent is connected.
+Select multiple rows: Shift+click for a range, ⌘/Ctrl+click to add rows.
 
 ## What's new
 
-- **Drag and drop**: reorder open tabs by dragging them (drop on the empty tab bar to move one to the end), and reorder connections in the sidebar. The connection order is saved.
-- `dbclaw-ctl` / MCP: a new `drag` method, so agents can reorder tabs too.
-
-## Fixes
-
-- **Windows**: updating, reinstalling or uninstalling failed with an access error while an AI agent (e.g. Claude Code) had the DB Claw MCP server running. The installer now stops `dbclaw-ctl.exe` first, and the uninstaller also closes the app. In Claude Code, run `/mcp` afterwards to reconnect.
-
-  If you're on 0.2.2 or older, close Claude Code (or end `dbclaw-ctl.exe` in Task Manager) before this update. Later updates handle it themselves.
+- **Multiple row selection** in tables and query results:
+  - **Click** selects a row, **Shift+click** selects every row in between, **⌘+click** (Ctrl+click on Windows/Linux) adds or removes a row.
+  - **Arrow keys** move a single-row selection; **Esc** clears it.
+- **The whole selected row is highlighted**, not just the clicked cell.
+- **Act on all selected rows**: **⌘⌫** (Ctrl+Backspace) or right-click → *Delete N rows* marks them for deletion (saved with ⌘S as before), and **⌘C** copies them as tab-separated lines that paste straight into a spreadsheet.
+- Automation: `click` accepts `modifiers` (`shift`, `secondary`), and the table state lists the selected rows.
 
 ## Downloads
 
