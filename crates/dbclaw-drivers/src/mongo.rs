@@ -2,7 +2,8 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex as StdMutex;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
@@ -16,7 +17,7 @@ use dbclaw_core::complete::{Catalog, CatalogTable};
 use dbclaw_core::mongo_refs;
 use dbclaw_core::mongo_shell::{self, MongoCommand, UpdateSpec};
 use futures_util::{StreamExt as _, TryStreamExt as _};
-use mongodb::options::ClientOptions;
+use mongodb::options::{ClientOptions, Tls};
 use mongodb::results::CollectionType;
 use mongodb::{Client, IndexModel};
 
@@ -37,6 +38,57 @@ const REF_CACHE_TTL: Duration = Duration::from_secs(600);
 
 type Cache<T> = StdMutex<HashMap<(String, String), (std::time::Instant, T)>>;
 
+/// The driver's rustls trusts only its bundled Mozilla roots, so servers with
+/// a company CA (installed in the OS trust store) fail with `UnknownIssuer`.
+/// Unless the URL names its own `tlsCAFile`, point it at a PEM bundle of the
+/// OS trust store instead (which includes the public CAs too).
+fn trust_system_roots(options: &mut ClientOptions) {
+    let Some(Tls::Enabled(tls)) = options.tls.as_mut() else { return };
+    if tls.ca_file_path.is_some() {
+        return;
+    }
+    if let Some(path) = system_ca_bundle() {
+        tls.ca_file_path = Some(path.clone());
+    }
+}
+
+/// Writes the OS trust store as PEM once per process; `None` (keep the driver's
+/// bundled roots) when the store is empty or the file can't be written.
+fn system_ca_bundle() -> Option<&'static PathBuf> {
+    static BUNDLE: OnceLock<Option<PathBuf>> = OnceLock::new();
+    BUNDLE
+        .get_or_init(|| {
+            let certs = rustls_native_certs::load_native_certs().certs;
+            if certs.is_empty() {
+                return None;
+            }
+            let mut pem = String::new();
+            for cert in &certs {
+                pem_encode(&mut pem, cert.as_ref());
+            }
+            let dir = dirs::cache_dir()?.join("DB Claw");
+            std::fs::create_dir_all(&dir).ok()?;
+            let path = dir.join("system-ca.pem");
+            // Write-then-rename so a concurrent instance never reads half a file.
+            let tmp = dir.join(format!("system-ca.{}.tmp", std::process::id()));
+            std::fs::write(&tmp, pem).ok()?;
+            std::fs::rename(&tmp, &path).ok()?;
+            Some(path)
+        })
+        .as_ref()
+}
+
+fn pem_encode(out: &mut String, der: &[u8]) {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(der);
+    out.push_str("-----BEGIN CERTIFICATE-----\n");
+    for line in b64.as_bytes().chunks(64) {
+        out.push_str(std::str::from_utf8(line).unwrap_or_default());
+        out.push('\n');
+    }
+    out.push_str("-----END CERTIFICATE-----\n");
+}
+
 pub struct MongoConnection {
     client: Client,
     default_db: Option<String>,
@@ -56,6 +108,7 @@ impl MongoConnection {
                 None => bail!("a password was given but the URL has no user name"),
             }
         }
+        trust_system_roots(&mut options);
         options.app_name = Some("DB Claw".into());
         if options.server_selection_timeout.is_none() {
             options.server_selection_timeout = Some(Duration::from_secs(8));

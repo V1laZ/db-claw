@@ -1527,13 +1527,16 @@ name = "dbclaw-drivers"
 version = "0.2.1"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "bson",
  "dbclaw-core",
+ "dirs 6.0.0",
  "futures-util",
  "mongodb",
  "native-tls",
  "postgres-native-tls",
  "reqwest",
+ "rustls-native-certs",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
