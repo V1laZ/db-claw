@@ -1,16 +1,8 @@
-Grid polish and fixes for macOS.
-
-## What's new
-
-- **Tables end where your data ends**: stripes, row lines and the hover highlight stop at the last column, and the empty space below the last row stays plain.
-- **Readable column headers**: the column name is the prominent part, the data type is dimmed.
-- **Filter syntax help** is now grouped into sections with code examples and plain descriptions, instead of a wall of monospace text.
-- Long values end in "…" instead of being cut off.
+Fix: connecting to MongoDB servers that use a company certificate.
 
 ## Fixes
 
-- **macOS**: closing the window now quits DB Claw. Before, the app kept running without a window and couldn't be reopened from the Dock.
-- Faster grid drawing than in the first version of the new look (same speed as 0.2.0).
+- **MongoDB over TLS**: DB Claw now trusts the certificate authorities installed on your computer, not just the public ones. Servers with a company or self-hosted CA (`ssl=true` / `tls=true`, including `mongodb+srv://`) failed with *invalid peer certificate: UnknownIssuer*; they connect now. A `tlsCAFile` in the connection URL still takes precedence.
 
 ## Downloads
 
@@ -20,7 +12,7 @@ Grid polish and fixes for macOS.
 | Windows x86_64 | `db-claw-v…-windows-x86_64-setup.exe` |
 | Linux x86_64 | `db-claw-v…-linux-x86_64.AppImage`: `chmod +x` and run |
 
-Already on 0.2.0? DB Claw updates itself: you'll get a **Restart to update** notification within a day, or use **DB Claw → Check for Updates…** right away.
+Already on 0.2.x? DB Claw updates itself: you'll get a **Restart to update** notification within a day, or use **DB Claw → Check for Updates…** right away.
 
 ## Notes
 
