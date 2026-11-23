@@ -377,12 +377,13 @@ pub static METHODS: &[MethodSpec] = &[
     },
     MethodSpec {
         name: "click",
-        description: "Low-level: click at window coordinates in points (state.window.width/height give the size; a screenshot may be scaled differently). Use count=2 for double-click.",
+        description: "Low-level: click at window coordinates in points (state.window.width/height give the size; a screenshot may be scaled differently). Use count=2 for double-click; modifiers=shift / secondary select row ranges / extra rows in grids.",
         params: &[
             ("x", "number", "X in points from the window's left edge", true),
             ("y", "number", "Y in points from the top of the window content", true),
             ("button", "string", "left (default), right or middle", false),
             ("count", "integer", "Click count (2 = double-click)", false),
+            ("modifiers", "string", "Keys held while clicking: shift, secondary (Cmd on macOS, Ctrl elsewhere), ctrl, alt, cmd; combine with +", false),
         ],
     },
     MethodSpec {

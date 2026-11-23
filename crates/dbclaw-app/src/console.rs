@@ -8,7 +8,7 @@ use dbclaw_drivers::{Connection, PgExecError, Session};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Editor, EditorState, InputEvent};
-use gpui_kit::component::table::{DataTable, TableState};
+use gpui_kit::component::table::{DataTable, TableEvent, TableState};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, Selectable as _, Sizable as _, h_flex, v_flex,
     v_resizable, resizable_panel,
@@ -99,11 +99,24 @@ impl ConsoleView {
                 .col_movable(false)
                 .sortable(true)
         });
-        let subs = vec![cx.subscribe_in(&editor, window, |this, _, ev: &InputEvent, window, cx| {
-            if let InputEvent::PressEnter { secondary: true, shift } = ev {
-                this.run(*shift, window, cx);
-            }
-        })];
+        let subs = vec![
+            cx.subscribe_in(&editor, window, |this, _, ev: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { secondary: true, shift } = ev {
+                    this.run(*shift, window, cx);
+                }
+            }),
+            cx.observe(&table, |_, table, cx| crate::grid::sync_row_selection(&table, cx)),
+            // Keep the grid's row selection in step with keyboard navigation.
+            cx.subscribe(&table, |_, table, ev: &TableEvent, cx| {
+                if let TableEvent::SelectCell(row, _) | TableEvent::SelectRow(row) = ev {
+                    let row = *row;
+                    table.update(cx, |t, cx| {
+                        t.delegate_mut().table_selected(row);
+                        cx.notify();
+                    });
+                }
+            }),
+        ];
         Self {
             conn_id,
             conn_name,

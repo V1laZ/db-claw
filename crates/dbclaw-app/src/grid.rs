@@ -11,7 +11,7 @@ use std::rc::Rc;
 use dbclaw_core::model::{Cell, ColumnMeta, NewValue, ResultSet, ValueKind};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableState};
+use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableSelection, TableState};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, StyledExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -71,6 +71,13 @@ pub struct GridDelegate {
     pub deleted: BTreeSet<usize>,
     pub editor: Option<CellEditor>,
     pub loading: bool,
+    /// Selected rows (click, Shift+click range, ⌘/Ctrl+click toggle). The table's
+    /// own selection is a single cell; this is the row selection on top of it.
+    pub selected_rows: BTreeSet<usize>,
+    /// Where a Shift+click range starts.
+    anchor: Option<usize>,
+    /// Row of the last mouse click, until the table reports the matching selection.
+    clicked_row: Option<usize>,
     widths: Vec<Pixels>,
     /// Columns already widened for their reference arrow.
     widened: BTreeSet<usize>,
@@ -88,6 +95,9 @@ impl GridDelegate {
             deleted: BTreeSet::new(),
             editor: None,
             loading: false,
+            selected_rows: BTreeSet::new(),
+            anchor: None,
+            clicked_row: None,
             widths: Vec::new(),
             widened: BTreeSet::new(),
         }
@@ -102,10 +112,46 @@ impl GridDelegate {
         self.edits.clear();
         self.deleted.clear();
         self.editor = None;
+        self.clear_row_selection();
         if !same_columns || self.widths.len() != self.set.columns.len() {
             self.widths = compute_widths(&self.set);
             self.widened.clear();
         }
+    }
+
+    /// A mouse press on `row`: plain = select only it, Shift = range from the anchor,
+    /// `toggle` (⌘ on macOS, Ctrl elsewhere) = add or remove it.
+    pub fn click_row(&mut self, row: usize, shift: bool, toggle: bool) {
+        match (shift, self.anchor) {
+            (true, Some(anchor)) => self.selected_rows = (anchor.min(row)..=anchor.max(row)).collect(),
+            _ if toggle => {
+                if !self.selected_rows.remove(&row) {
+                    self.selected_rows.insert(row);
+                }
+                self.anchor = Some(row);
+            }
+            _ => self.select_only(row),
+        }
+        self.clicked_row = Some(row);
+    }
+
+    /// The table moved its selection to `row`: keep the row selection when that came
+    /// from our click, otherwise (keyboard) select just that row.
+    pub fn table_selected(&mut self, row: usize) {
+        if self.clicked_row.take() != Some(row) {
+            self.select_only(row);
+        }
+    }
+
+    pub fn select_only(&mut self, row: usize) {
+        self.selected_rows = BTreeSet::from([row]);
+        self.anchor = Some(row);
+    }
+
+    pub fn clear_row_selection(&mut self) {
+        self.selected_rows.clear();
+        self.anchor = None;
+        self.clicked_row = None;
     }
 
     /// Make room for the arrow in reference columns (once per column, so
@@ -152,6 +198,7 @@ impl GridDelegate {
     }
 
     fn sort_locally(&mut self, col: usize, sort: ColumnSort) {
+        self.clear_row_selection();
         let mut idx: Vec<usize> = (0..self.set.rows.len()).collect();
         if sort != ColumnSort::Default {
             let numeric = self.set.columns.get(col).map(|c| c.kind) == Some(ValueKind::Number);
@@ -352,6 +399,7 @@ impl TableDelegate for GridDelegate {
         let theme = cx.theme();
         let deleted = self.deleted.contains(&row_ix);
         let pending = col_ix > 0 && self.edits.contains_key(&(row_ix, col_ix - 1));
+        let selected = self.selected_rows.contains(&row_ix);
         let hover = cx.try_global::<GridHover>().map(|h| h.0).unwrap_or(theme.muted);
         // Row decoration drawn by the cell itself (stripe, row line, hover,
         // edit tints), so it ends at the last column.
@@ -362,9 +410,19 @@ impl TableDelegate for GridDelegate {
             .border_b_1()
             .border_color(theme.table_row_border)
             .when(row_ix % 2 == 1, |this| this.bg(theme.tokens.table_even))
+            .when(selected, |this| this.bg(theme.table_active_border.opacity(0.2)))
             .when(pending, |this| this.bg(theme.warning.opacity(0.18)))
             .when(deleted, |this| this.bg(theme.danger.opacity(0.12)))
-            .when(!pending && !deleted, |this| this.group_hover(ROW_GROUP, |s| s.bg(hover)));
+            .when(!selected && !pending && !deleted, |this| this.group_hover(ROW_GROUP, |s| s.bg(hover)))
+            // Row selection; the table then selects the clicked cell as usual.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |table, e: &MouseDownEvent, _, cx| {
+                    let toggle = e.modifiers.secondary(cx);
+                    table.delegate_mut().click_row(row_ix, e.modifiers.shift, toggle);
+                    cx.notify();
+                }),
+            );
         if col_ix == 0 {
             return frame
                 .text_right()
@@ -501,5 +559,22 @@ impl TableDelegate for GridDelegate {
         _: &mut Window,
         _: &mut Context<TableState<Self>>,
     ) {
+    }
+}
+
+/// Clear the row selection when the table's own selection was cleared (Esc closes
+/// it in the table before our key handlers see it). Call from an observer of the table.
+pub fn sync_row_selection(table: &Entity<TableState<GridDelegate>>, cx: &mut App) {
+    let cleared = {
+        let t = table.read(cx);
+        let d = t.delegate();
+        // A click is still being processed: the table selects the cell on mouse up.
+        d.clicked_row.is_none() && t.selection() == TableSelection::None && !d.selected_rows.is_empty()
+    };
+    if cleared {
+        table.update(cx, |t, cx| {
+            t.delegate_mut().clear_row_selection();
+            cx.notify();
+        });
     }
 }

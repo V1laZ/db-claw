@@ -96,6 +96,9 @@ pub struct TableView {
     request: u64,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
+    /// Keeps the grid's row selection in step with the table (not in `_subs`, which
+    /// `commit_edit` truncates).
+    _selection_sync: Subscription,
 }
 
 impl EventEmitter<TableViewEvent> for TableView {}
@@ -148,6 +151,7 @@ impl TableView {
         });
         let provider = Rc::new(FilterCompletion { kind: conn.kind(), fields: filter_fields.clone() });
         filter_input.update(cx, |e, _| e.lsp_mut().completion_provider = Some(provider));
+        let selection_sync = cx.observe(&table, |_, table, cx| crate::grid::sync_row_selection(&table, cx));
         let subs = vec![
             cx.subscribe_in(&table, window, Self::on_table_event),
             cx.subscribe_in(&filter_input, window, |this, _, ev: &InputEvent, window, cx| match ev {
@@ -205,6 +209,7 @@ impl TableView {
             elapsed: None,
             request: 0,
             focus: cx.focus_handle(),
+            _selection_sync: selection_sync,
             _subs: subs,
         };
         if let Some(text) = initial_filter {
@@ -475,6 +480,13 @@ impl TableView {
         cx: &mut Context<Self>,
     ) {
         match ev {
+            TableEvent::SelectCell(row, _) | TableEvent::SelectRow(row) => {
+                let row = *row;
+                self.table.update(cx, |t, cx| {
+                    t.delegate_mut().table_selected(row);
+                    cx.notify();
+                });
+            }
             TableEvent::DoubleClickedCell(row, col) if *col > 0 => self.start_edit(*row, col - 1, window, cx),
             TableEvent::RightClickedCell(row, col) => self.open_row_menu(*row, *col, window, cx),
             TableEvent::RightClickedRow(Some(row)) => self.open_row_menu(*row, 0, window, cx),
@@ -493,6 +505,16 @@ impl TableView {
         match self.table.read(cx).selection() {
             TableSelection::Cell(r, c) if c > 0 => Some((r, c - 1)),
             _ => None,
+        }
+    }
+
+    /// Rows an action applies to: the row selection, or the table's selected row.
+    fn target_rows(&self, cx: &App) -> Vec<usize> {
+        let selected = &self.table.read(cx).delegate().selected_rows;
+        if selected.is_empty() {
+            self.selected_row(cx).into_iter().collect()
+        } else {
+            selected.iter().copied().collect()
         }
     }
 
@@ -665,15 +687,20 @@ impl TableView {
         cx.notify();
     }
 
-    fn toggle_delete(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
+    /// Mark `rows` for deletion, or unmark them when they all are already.
+    fn toggle_delete(&mut self, rows: &[usize], window: &mut Window, cx: &mut Context<Self>) {
         if !self.editable {
             window.push_notification(Notification::warning("This object is read-only"), cx);
             return;
         }
         self.table.update(cx, |t, cx| {
             let d = t.delegate_mut();
-            if !d.deleted.remove(&row) {
-                d.deleted.insert(row);
+            if rows.iter().all(|r| d.deleted.contains(r)) {
+                for r in rows {
+                    d.deleted.remove(r);
+                }
+            } else {
+                d.deleted.extend(rows.iter().copied());
             }
             cx.notify();
         });
@@ -863,13 +890,33 @@ impl TableView {
     }
 
     fn copy_cell(&self, cx: &mut App) {
-        if let Some((r, c)) = self.selected_cell(cx) {
+        let rows = self.target_rows(cx);
+        if rows.len() > 1 {
+            self.copy_rows_tsv(&rows, cx);
+        } else if let Some((r, c)) = self.selected_cell(cx) {
             if let Some(text) = self.table.read(cx).delegate().cell_value_text(r, c) {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
             }
         } else if let Some(r) = self.selected_row(cx) {
             self.copy_row_json(r, cx);
         }
+    }
+
+    /// Rows as tab-separated values, one line per row (pastes into spreadsheets).
+    fn copy_rows_tsv(&self, rows: &[usize], cx: &mut App) {
+        let d = self.table.read(cx).delegate();
+        let clean = |s: String| s.replace(['\t', '\n', '\r'], " ");
+        let text = rows
+            .iter()
+            .map(|&r| {
+                (0..d.set.columns.len())
+                    .map(|c| clean(d.cell_value_text(r, c).unwrap_or_default()))
+                    .collect::<Vec<_>>()
+                    .join("\t")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
     }
 
     fn copy_row_json(&self, row: usize, cx: &mut App) {
@@ -893,6 +940,14 @@ impl TableView {
     /// Show the context menu of a row at the pointer. (The table's own
     /// context menu doesn't open on cells when cell selection is on.)
     fn open_row_menu(&mut self, row: usize, table_col: usize, window: &mut Window, cx: &mut Context<Self>) {
+        // Right-clicking outside the selection selects that row (as in file managers).
+        self.table.update(cx, |t, cx| {
+            let d = t.delegate_mut();
+            if !d.selected_rows.contains(&row) {
+                d.select_only(row);
+                cx.notify();
+            }
+        });
         self.context_cell = Some((row, table_col));
         let spec = self.row_menu_spec(row, table_col, cx);
         self.show_menu(window, cx, move |m, view| spec.build(m, view));
@@ -944,10 +999,17 @@ impl TableView {
     }
 
     fn row_menu_spec(&self, row: usize, table_col: usize, cx: &App) -> RowMenu {
+        let d = self.table.read(cx).delegate();
+        let rows: Vec<usize> = d.selected_rows.iter().copied().collect();
         RowMenu {
             row,
             col: table_col.checked_sub(1),
-            deleted: self.table.read(cx).delegate().deleted.contains(&row),
+            deleted: if rows.len() > 1 {
+                rows.iter().all(|r| d.deleted.contains(r))
+            } else {
+                d.deleted.contains(&row)
+            },
+            rows,
             mongo: self.conn.kind() == DbKind::Mongo,
             outgoing: self
                 .outgoing_fks()
@@ -1212,8 +1274,9 @@ impl TableView {
     }
 
     fn on_delete_row(&mut self, _: &DeleteRow, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(r) = self.selected_row(cx) {
-            self.toggle_delete(r, window, cx);
+        let rows = self.target_rows(cx);
+        if !rows.is_empty() {
+            self.toggle_delete(&rows, window, cx);
         }
     }
 
@@ -1248,7 +1311,14 @@ impl TableView {
     }
 
     fn on_cancel(&mut self, _: &CancelEdit, window: &mut Window, cx: &mut Context<Self>) {
-        self.cancel_edit(window, cx);
+        if self.table.read(cx).delegate().editor.is_some() {
+            self.cancel_edit(window, cx);
+        } else {
+            self.table.update(cx, |t, cx| {
+                t.delegate_mut().clear_row_selection();
+                cx.notify();
+            });
+        }
     }
 
     /// Left/Right on a selected row moves into its first cell (the table
@@ -1279,6 +1349,8 @@ impl TableView {
 struct RowMenu {
     row: usize,
     col: Option<usize>,
+    /// The row selection; several rows switch copy/delete to all of them.
+    rows: Vec<usize>,
     deleted: bool,
     mongo: bool,
     outgoing: Vec<(String, String)>,
@@ -1287,7 +1359,7 @@ struct RowMenu {
 
 impl RowMenu {
     fn build(self, menu: PopupMenu, view: WeakEntity<TableView>) -> PopupMenu {
-        let RowMenu { row, col, deleted, mongo, outgoing, incoming } = self;
+        let RowMenu { row, col, rows, deleted, mongo, outgoing, incoming } = self;
         let act = |label: &str, icon: Lucide, f: RowAction| act_owned(label.to_string(), icon, view.clone(), f);
         let mut menu = menu;
         if let Some(col) = col {
@@ -1332,13 +1404,31 @@ impl RowMenu {
         if has_refs {
             menu = menu.separator();
         }
+        if rows.len() > 1 {
+            let n = rows.len();
+            let copy_rows = rows.clone();
+            return menu
+                .item(act_owned(
+                    format!("Copy {n} rows"),
+                    Lucide::Copy,
+                    view.clone(),
+                    Rc::new(move |t, _, cx| t.copy_rows_tsv(&copy_rows, cx)),
+                ))
+                .separator()
+                .item(act_owned(
+                    if deleted { format!("Undo delete ({n} rows)") } else { format!("Delete {n} rows") },
+                    if deleted { Lucide::Undo2 } else { Lucide::Trash },
+                    view.clone(),
+                    Rc::new(move |t, w, cx| t.toggle_delete(&rows, w, cx)),
+                ));
+        }
         menu.item(act("Copy row as JSON", Lucide::Copy, Rc::new(move |t, _, cx| t.copy_row_json(row, cx))))
             .item(act("Duplicate row…", Lucide::CopyPlus, Rc::new(move |t, w, cx| t.insert(Some(row), w, cx))))
             .separator()
             .item(act(
                 if deleted { "Undo delete" } else { "Delete row" },
                 if deleted { Lucide::Undo2 } else { Lucide::Trash },
-                Rc::new(move |t, w, cx| t.toggle_delete(row, w, cx)),
+                Rc::new(move |t, w, cx| t.toggle_delete(&[row], w, cx)),
             ))
     }
 }
@@ -1571,10 +1661,11 @@ impl Render for TableView {
                         .ghost()
                         .small()
                         .icon(Icon::new(Lucide::Trash))
-                        .tooltip("Mark selected row for deletion (⌘⌫)")
+                        .tooltip("Mark selected rows for deletion (⌘⌫)")
                         .on_click(cx.listener(|this, _, window, cx| {
-                            if let Some(r) = this.selected_row(cx) {
-                                this.toggle_delete(r, window, cx);
+                            let rows = this.target_rows(cx);
+                            if !rows.is_empty() {
+                                this.toggle_delete(&rows, window, cx);
                             }
                         })),
                 )
@@ -1956,6 +2047,8 @@ impl TableView {
             "error": self.error.as_ref().map(|s| s.to_string()),
             "elapsed_ms": self.elapsed.map(|e| e.as_secs_f64() * 1000.0),
             "pending_changes": d.change_count(),
+            "selected_rows": d.selected_rows.iter().collect::<Vec<_>>(),
+            "rows_marked_for_deletion": d.deleted.iter().collect::<Vec<_>>(),
             "last_save": self.last_save.as_ref().map(|(_, r)| match r { Ok(s) => json!({"ok": s}), Err(e) => json!({"error": e}) }),
         });
         tab["foreign_keys"] = json!(self

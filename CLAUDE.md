@@ -76,6 +76,10 @@ Run with `DBCLAW_CONTROL=1 DBCLAW_CONFIG_DIR=<scratch>` and use `target/debug/db
   - `main::tune_theme` clears the theme's `table_hover` (the table's own hover spans the full
     row) and cells paint `GridHover` instead; it must run after every theme sync;
   - `CELL_LINE_HEIGHT` assumes the default 32 px row height.
+- **Row selection** is ours, not the table's (its selection is one cell): `GridDelegate::
+  selected_rows`, set on mouse-down in `render_td` (Shift = range, ⌘/Ctrl = toggle), synced
+  from the table's `SelectCell`/`SelectRow` events (keyboard) and cleared by an observer when the
+  table's selection becomes empty (Esc). Delete/copy/context menu act on `target_rows`.
 - **Mongo TLS:** the driver's rustls trusts only its bundled Mozilla roots, so company-CA
   servers failed with `UnknownIssuer`. `mongo::trust_system_roots` writes the OS trust store to
   `<cache dir>/DB Claw/system-ca.pem` and passes it as `tlsCAFile` (unless the URL sets one).

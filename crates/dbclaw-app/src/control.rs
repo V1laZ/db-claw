@@ -108,6 +108,27 @@ struct Ctx {
     workspace: Entity<Workspace>,
 }
 
+/// `"shift"`, `"secondary"` (⌘ on macOS, Ctrl elsewhere), `"ctrl"`, `"alt"`, `"cmd"`,
+/// combined with `+` or `,`.
+fn parse_modifiers(spec: &str, cx: &App) -> Result<Modifiers> {
+    let mut m = Modifiers::default();
+    for part in spec.split(['+', ',']).map(str::trim).filter(|p| !p.is_empty()) {
+        match part.to_ascii_lowercase().as_str() {
+            "shift" => m.shift = true,
+            "ctrl" | "control" => m.control = true,
+            "alt" | "option" => m.alt = true,
+            "cmd" | "command" | "platform" | "super" | "win" => m.platform = true,
+            "secondary" => {
+                let s = Modifiers::secondary_key(cx);
+                m.platform |= s.platform;
+                m.control |= s.control;
+            }
+            other => bail!("unknown modifier `{other}`"),
+        }
+    }
+    Ok(m)
+}
+
 fn p_str<'a>(params: &'a Value, key: &str) -> Option<&'a str> {
     params.get(key).and_then(Value::as_str).filter(|s| !s.is_empty())
 }
@@ -557,6 +578,7 @@ impl Ctx {
                     _ => MouseButton::Left,
                 };
                 let count = p_u64(&params, "count").unwrap_or(1).clamp(1, 3) as usize;
+                let mods = cx.update(|_, cx| parse_modifiers(p_str(&params, "modifiers").unwrap_or(""), cx))??;
                 let position = point(px(x as f32), px(y as f32));
                 // Move first and let a couple of frames render: hover state
                 // (which e.g. context menus check) comes from the last frame.
@@ -571,11 +593,11 @@ impl Ctx {
                 cx.update(|window, cx| {
                     for n in 1..=count {
                         window.dispatch_event(
-                            PlatformInput::MouseDown(MouseDownEvent { button, position, modifiers: Modifiers::default(), click_count: n, first_mouse: false }),
+                            PlatformInput::MouseDown(MouseDownEvent { button, position, modifiers: mods, click_count: n, first_mouse: false }),
                             cx,
                         );
                         window.dispatch_event(
-                            PlatformInput::MouseUp(MouseUpEvent { button, position, modifiers: Modifiers::default(), click_count: n }),
+                            PlatformInput::MouseUp(MouseUpEvent { button, position, modifiers: mods, click_count: n }),
                             cx,
                         );
                     }
