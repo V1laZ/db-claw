@@ -39,7 +39,7 @@ Useful env vars: `DBCLAW_CONFIG_DIR` (scratch config dir), `DBCLAW_CONTROL=1` (s
 ## Driving the UI for testing
 
 Run with `DBCLAW_CONTROL=1 DBCLAW_CONFIG_DIR=<scratch>` and use `target/debug/dbclaw-ctl`
-(`state`, `open_table`, `filter`, `follow_reference`, `click x= y=`, `key`, `type`,
+(`state`, `open_table`, `filter`, `follow_reference`, `click x= y=`, `drag x1= y1= x2= y2= [hold_ms=]`, `key`, `type`,
 `screenshot <file>`). Screenshots are rendered by the app offscreen (macOS, Windows).
 
 - The control server redraws the window after every request, which **hides "stale until

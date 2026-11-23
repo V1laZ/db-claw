@@ -6,6 +6,7 @@
 mod actions;
 mod connection_dialog;
 mod control;
+mod drag;
 mod completion;
 mod console;
 mod grid;

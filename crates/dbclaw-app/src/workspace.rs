@@ -16,6 +16,7 @@ use gpui_kit::*;
 use crate::actions::*;
 use crate::connection_dialog;
 use crate::console::ConsoleView;
+use crate::drag::{DraggedTab, drop_marker};
 use crate::navigator::{NavEvent, Navigator};
 use crate::state::{AppEvent, AppState};
 use crate::table_view::{TableSource, TableView, TableViewEvent};
@@ -228,6 +229,16 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Move the tab at `from` to position `to` (drag and drop); the active tab stays active.
+    pub fn move_tab(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
+        let active = self.tabs.get(self.active).map(Self::tab_id);
+        crate::util::move_item(&mut self.tabs, from, to);
+        if let Some(id) = active {
+            self.active = self.tab_index(id).unwrap_or(0);
+        }
+        cx.notify();
+    }
+
     pub fn close_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         if ix >= self.tabs.len() {
             return;
@@ -330,6 +341,7 @@ impl Workspace {
                         (Lucide::SquareTerminal, c.title(), false, c.is_running(), c.conn_name.clone())
                     }
                 };
+                let dragged = DraggedTab { ix, grab: Point::default(), icon, title: title.clone() };
                 h_flex()
                     .id(("tab", ix))
                     .group("tab")
@@ -343,6 +355,10 @@ impl Workspace {
                     .border_r_1()
                     .border_color(theme.border)
                     .cursor_pointer()
+                    // Drag a tab onto another to reorder; a bar marks where it lands.
+                    .on_drag(dragged, |d, grab, _, cx| cx.new(|_| DraggedTab { grab, ..d.clone() }))
+                    .drag_over::<DraggedTab>(move |style, d, _, cx| drop_marker(style, d.ix, ix, true, cx))
+                    .on_drop(cx.listener(move |this, d: &DraggedTab, _, cx| this.move_tab(d.ix, ix, cx)))
                     .when(active, |this| this.bg(theme.tab_active).text_color(theme.tab_active_foreground))
                     .when(!active, |this| this.text_color(theme.tab_foreground).hover(|s| s.bg(theme.list_hover)))
                     .child(Icon::new(icon).small().text_color(theme.muted_foreground))
@@ -365,7 +381,7 @@ impl Workspace {
                     .on_click(cx.listener(move |this, _, window, cx| this.activate(ix, window, cx)))
             }))
             .child(
-                div().px_1().child(
+                div().px_1().flex_shrink_0().child(
                     Button::new("new-console")
                         .ghost()
                         .xsmall()
@@ -373,6 +389,19 @@ impl Workspace {
                         .tooltip("New console (⌘T)")
                         .on_click(cx.listener(|this, _, window, cx| this.new_console(window, cx))),
                 ),
+            )
+            // Dropping a tab on the empty rest of the bar moves it to the end.
+            .child(
+                div()
+                    .id("tab-bar-rest")
+                    .flex_1()
+                    .min_w(px(24.))
+                    .h_full()
+                    .drag_over::<DraggedTab>(|style, _, _, cx| style.bg(cx.theme().list_hover))
+                    .on_drop(cx.listener(|this, d: &DraggedTab, _, cx| {
+                        let last = this.tabs.len().saturating_sub(1);
+                        this.move_tab(d.ix, last, cx)
+                    })),
             )
     }
 

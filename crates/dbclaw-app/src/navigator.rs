@@ -13,6 +13,7 @@ use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::drag::{DraggedConnection, drop_marker};
 use crate::state::{AppEvent, AppState, LiveStatus};
 use crate::util::{group_digits, io};
 
@@ -495,6 +496,31 @@ impl Navigator {
                 this.child(div().text_xs().text_color(theme.muted_foreground).child(t))
             })
             .on_click(cx.listener(move |this, _, window, cx| this.click_row(ix, window, cx)));
+
+        // Connections reorder by drag and drop; a bar marks where the dragged one lands.
+        let el = match &row.kind {
+            RowKind::Conn { id, name, kind } => {
+                let pos = self.state.read(cx).connections.iter().position(|c| &c.id == id).unwrap_or(0);
+                let dragged = DraggedConnection {
+                    id: id.clone(),
+                    ix: pos,
+                    icon: match kind {
+                        DbKind::Postgres => Lucide::Database,
+                        DbKind::Mongo => Lucide::Leaf,
+                    },
+                    name: name.clone(),
+                    grab: Point::default(),
+                };
+                let target = id.clone();
+                el.on_drag(dragged, |d, grab, _, cx| cx.new(|_| DraggedConnection { grab, ..d.clone() }))
+                    .drag_over::<DraggedConnection>(move |style, d, _, cx| drop_marker(style, d.ix, pos, false, cx))
+                    .on_drop(cx.listener(move |this, d: &DraggedConnection, _, cx| {
+                        let target = target.clone();
+                        this.state.update(cx, |s, cx| s.move_connection(&d.id, &target, cx));
+                    }))
+            }
+            _ => el,
+        };
 
         let kind = row.kind.clone();
         let view = cx.entity().downgrade();

@@ -386,6 +386,17 @@ pub static METHODS: &[MethodSpec] = &[
         ],
     },
     MethodSpec {
+        name: "drag",
+        description: "Low-level: press the left mouse button at (x1, y1), move to (x2, y2) and release, e.g. to reorder tabs or sidebar connections by drag and drop. Window coordinates in points.",
+        params: &[
+            ("x1", "number", "Start X in points", true),
+            ("y1", "number", "Start Y in points", true),
+            ("x2", "number", "End X in points", true),
+            ("y2", "number", "End Y in points", true),
+            ("hold_ms", "integer", "Wait this long before releasing (e.g. to screenshot the drop marker)", false),
+        ],
+    },
+    MethodSpec {
         name: "close_dialog",
         description: "Close the open dialog (if any) and dismiss notifications.",
         params: &[],

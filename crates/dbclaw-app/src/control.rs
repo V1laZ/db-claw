@@ -582,6 +582,50 @@ impl Ctx {
                 })?;
                 Ok(json!({ "ok": true }))
             }
+            "drag" => {
+                let num = |k: &str| -> Result<f32> {
+                    params.get(k).and_then(Value::as_f64).map(|v| v as f32).ok_or_else(|| anyhow!("missing number `{k}`"))
+                };
+                let from = point(px(num("x1")?), px(num("y1")?));
+                let to = point(px(num("x2")?), px(num("y2")?));
+                let mods = Modifiers::default();
+                cx.update(|window, cx| {
+                    window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position: from, pressed_button: None, modifiers: mods }), cx);
+                    window.refresh();
+                })?;
+                cx.background_executor().timer(Duration::from_millis(40)).await;
+                cx.update(|window, cx| {
+                    window.dispatch_event(
+                        PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Left, position: from, modifiers: mods, click_count: 1, first_mouse: false }),
+                        cx,
+                    );
+                })?;
+                // Move in steps with frames in between, so the drag starts and drop
+                // targets see the pointer (as with a real mouse).
+                const STEPS: usize = 12;
+                for i in 1..=STEPS {
+                    let t = i as f32 / STEPS as f32;
+                    let position = point(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
+                    cx.update(|window, cx| {
+                        window.dispatch_event(
+                            PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: Some(MouseButton::Left), modifiers: mods }),
+                            cx,
+                        );
+                        window.refresh();
+                    })?;
+                    cx.background_executor().timer(Duration::from_millis(16)).await;
+                }
+                if let Some(hold) = p_u64(&params, "hold_ms") {
+                    cx.background_executor().timer(Duration::from_millis(hold.min(10_000))).await;
+                }
+                cx.update(|window, cx| {
+                    window.dispatch_event(
+                        PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Left, position: to, modifiers: mods, click_count: 1 }),
+                        cx,
+                    );
+                })?;
+                Ok(json!({ "ok": true }))
+            }
             "capture" => {
                 // Redraw, give the frame a moment, then render it offscreen.
                 cx.update(|window, _| window.refresh())?;

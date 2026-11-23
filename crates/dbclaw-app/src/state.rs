@@ -71,6 +71,18 @@ impl AppState {
         self.persist(cx);
     }
 
+    /// Move connection `id` to the position of `target` (sidebar drag and drop).
+    /// The order is saved.
+    pub fn move_connection(&mut self, id: &str, target: &str, cx: &mut Context<Self>) {
+        let pos = |id: &str| self.connections.iter().position(|c| c.id == id);
+        let (Some(from), Some(to)) = (pos(id), pos(target)) else { return };
+        if from == to {
+            return;
+        }
+        crate::util::move_item(&mut self.connections, from, to);
+        self.persist(cx);
+    }
+
     pub fn remove(&mut self, id: &str, cx: &mut Context<Self>) {
         self.connections.retain(|c| c.id != id);
         self.live.remove(id);
