@@ -14,7 +14,13 @@ New-Item -ItemType Directory -Force -Path $logs | Out-Null
 function Invoke-Setup([string]$Name, [string[]]$Extra = @()) {
     $log = Join-Path $logs "$Name.log"
     $argv = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$log") + $Extra
-    $p = Start-Process -FilePath $Setup -ArgumentList $argv -Wait -PassThru
+    # Not `Start-Process -Wait`: that also waits for everything setup starts, and with
+    # /UPDATE setup relaunches the app, which keeps running.
+    $p = Start-Process -FilePath $Setup -ArgumentList $argv -PassThru
+    if (-not $p.WaitForExit(180000)) {
+        if (Test-Path $log) { Get-Content $log | Write-Host }
+        throw "$Name did not finish within 3 minutes"
+    }
     $text = Get-Content $log -Raw
     # Locked files show up as access denied / sharing violation (codes 5 / 32) and as
     # suppressed retry/ignore message boxes, even when setup still exits with 0.
@@ -59,7 +65,8 @@ if (-not $mcp.WaitForExit(5000)) { throw 'reinstall left dbclaw-ctl mcp running'
 # 4. Uninstall while the MCP server runs. The uninstaller hands off to a temp copy and
 #    returns at once, so wait for the files to disappear.
 $mcp = Start-Mcp
-Start-Process -FilePath (Join-Path $app 'unins000.exe') -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+$u = Start-Process -FilePath (Join-Path $app 'unins000.exe') -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -PassThru
+if (-not $u.WaitForExit(120000)) { throw 'uninstaller did not finish within 2 minutes' }
 $deadline = (Get-Date).AddSeconds(60)
 while ((Test-Path $ctl) -or (Test-Path (Join-Path $app 'dbclaw.exe'))) {
     if ((Get-Date) -gt $deadline) { throw "uninstall left files in $app" }
