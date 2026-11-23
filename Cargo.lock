@@ -1471,7 +1471,7 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
 name = "dbclaw-app"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1497,7 +1497,7 @@ dependencies = [
 
 [[package]]
 name = "dbclaw-control"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1510,7 +1510,7 @@ dependencies = [
 
 [[package]]
 name = "dbclaw-core"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1524,7 +1524,7 @@ dependencies = [
 
 [[package]]
 name = "dbclaw-drivers"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1546,7 +1546,7 @@ dependencies = [
 
 [[package]]
 name = "dbclaw-release"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
