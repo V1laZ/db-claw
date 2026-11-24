@@ -1,13 +1,9 @@
-The sidebar shows only the database in your connection, unless you choose to show all.
+Copy values from query results, and shortcuts shown the way your OS writes them.
 
-## What's new
+## Fixes
 
-- **Only your connection's database by default**: a connection that names a database (e.g. `…/shop`) lists just that one in the sidebar. Tick **Show all databases** in the connection dialog to list every database you can access, e.g. for a MongoDB admin connection that sees dev and production. Connections without a database (MongoDB's `authSource` doesn't count) still list all.
-- **PostgreSQL: only what you can read**: with all databases shown, PostgreSQL lists the databases that contain a table you can read (or that you own), and inside a database only the tables and views you have access to. No more tables that fail with *permission denied*.
-
-## After updating
-
-If your connection URL contains a database but you want to see the others too, edit the connection (right-click → *Edit connection…*) and tick **Show all databases**. Colors set on databases are kept.
+- **Copy from query results**: in a SQL or Mongo console, click a result cell and press ⌘C (Ctrl+C on Windows/Linux) to copy its value, or select several rows to copy them as tab-separated lines that paste straight into a spreadsheet. Right-click a result for **Copy value**, **Copy row** or **Copy N rows**.
+- **Shortcuts match your OS**: the start screen, tooltips and console hints show Ctrl+… on Windows and Linux instead of the Mac ⌘ symbols.
 
 ## Downloads
 
