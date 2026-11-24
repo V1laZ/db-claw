@@ -58,6 +58,9 @@ Run with `DBCLAW_CONTROL=1 DBCLAW_CONFIG_DIR=<scratch>` and use `target/debug/db
   - counts are limited to 3 s (Postgres falls back to the planner estimate)
   - grid queries run with a 30 s `statement_timeout`; consoles are unlimited but cancellable
   - Postgres: at most 3 browse connections + 1 for saving per database
+  - Postgres database list: for users who aren't superuser / `pg_read_all_data`, each
+    database they may connect to (but don't own or have CREATE on) gets one short-lived,
+    unpooled connection to check for a readable table (4 at a time, 3 s limit, ≤ 100 databases)
   - Mongo reference inference: 20 sampled docs, ≤ 60 queries per collection, 4 concurrent,
     1 s `maxTimeMS`, real collections only (no views), cached 10 min
 - **Saving:** Postgres saves in one transaction; each UPDATE/DELETE must hit exactly one row

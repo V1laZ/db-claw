@@ -28,6 +28,15 @@ const BROWSE_POOL: usize = 3;
 const BROWSE_TIMEOUT_MS: u32 = 30_000;
 /// Time limit for exact row counts; beyond it an estimate is shown.
 const COUNT_TIMEOUT_MS: u32 = 3_000;
+/// Time limit for checking whether a database has a table the user can read.
+const PROBE_TIMEOUT_MS: u32 = 3_000;
+/// Check at most this many databases per listing (one short connection each).
+const MAX_DATABASE_PROBES: usize = 100;
+/// SQL condition (on `pg_class c`, `pg_namespace n`) for tables, views etc. the
+/// user can read: SELECT on the table or any of its columns, and USAGE on the schema.
+const READABLE_RELATION: &str = "c.relkind IN ('r','p','v','m','f') \
+     AND n.nspname <> 'information_schema' AND n.nspname NOT LIKE 'pg\\_%' \
+     AND has_schema_privilege(n.oid, 'USAGE') AND has_any_column_privilege(c.oid, 'SELECT')";
 
 pub struct PgConnection {
     base: tokio_postgres::Config,
@@ -141,28 +150,95 @@ impl PgConnection {
         }
     }
 
+    /// Databases the user can actually use. Every user may connect to every database
+    /// by default (PUBLIC has CONNECT) and see its table names, so "may connect" isn't
+    /// enough: keep databases the user owns or may create tables in, and otherwise those
+    /// with at least one table it can read. Superusers and `pg_read_all_data` members
+    /// see everything. The connection's own database is always listed.
     pub async fn list_databases(&self) -> Result<Vec<String>> {
         let c = self.browse_client(&self.default_db).await?;
+        let reads_all = simple_scalar(
+            &c.client,
+            "SELECT (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) \
+                 OR coalesce((SELECT bool_or(pg_has_role(current_user, oid, 'member')) \
+                              FROM pg_roles WHERE rolname = 'pg_read_all_data'), false)",
+        )
+        .await?
+            == "t";
         let rows = simple_rows(
             &c.client,
-            // Only databases this user may connect to (not every database on the server).
-            "SELECT datname FROM pg_database \
+            "SELECT datname, \
+                    pg_has_role(current_user, datdba, 'member') \
+                      OR has_database_privilege(datname, 'CREATE') AS usable \
+             FROM pg_database \
              WHERE NOT datistemplate AND datallowconn AND has_database_privilege(datname, 'CONNECT') \
              ORDER BY datname",
         )
         .await?;
-        Ok(rows.iter().filter_map(|r| r.get(0).map(str::to_string)).collect())
+        drop(c);
+        let candidates: Vec<(String, bool)> = rows
+            .iter()
+            .filter_map(|r| Some((r.get(0)?.to_string(), r.get(1) == Some("t"))))
+            .collect();
+        if reads_all {
+            return Ok(candidates.into_iter().map(|(name, _)| name).collect());
+        }
+        let to_probe: Vec<String> = candidates
+            .iter()
+            .filter(|(name, usable)| !usable && *name != self.default_db)
+            .map(|(name, _)| name.clone())
+            .take(MAX_DATABASE_PROBES)
+            .collect();
+        let readable: std::collections::HashSet<String> = futures_util::stream::iter(to_probe)
+            .map(|db| async move { self.has_readable_table(&db).await.then_some(db) })
+            .buffer_unordered(4)
+            .filter_map(|db| async move { db })
+            .collect()
+            .await;
+        Ok(candidates
+            .into_iter()
+            .enumerate()
+            .filter(|(i, (name, usable))| {
+                *usable
+                    || *name == self.default_db
+                    || readable.contains(name)
+                    // Too many databases to check them all: show the rest.
+                    || *i >= MAX_DATABASE_PROBES
+            })
+            .map(|(_, (name, _))| name)
+            .collect())
+    }
+
+    /// Can the user read at least one table in `database`? A short-lived connection
+    /// (not pooled), time-limited; unreachable counts as no.
+    async fn has_readable_table(&self, database: &str) -> bool {
+        let probe = async {
+            let c = self.connect(database).await?;
+            c.client
+                .simple_query(&format!("SET statement_timeout = {PROBE_TIMEOUT_MS}"))
+                .await
+                .map_err(|e| anyhow!(format_pg_error(&e)))?;
+            let readable = simple_scalar(
+                &c.client,
+                &format!("SELECT EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE {READABLE_RELATION})"),
+            )
+            .await?;
+            anyhow::Ok(readable == "t")
+        };
+        matches!(
+            tokio::time::timeout(Duration::from_millis(u64::from(PROBE_TIMEOUT_MS) + 2_000), probe).await,
+            Ok(Ok(true))
+        )
     }
 
     pub async fn list_objects(&self, database: &str) -> Result<Vec<ObjectInfo>> {
         let c = self.browse_client(database).await?;
         let rows = simple_rows(
             &c.client,
-            "SELECT n.nspname, c.relname, c.relkind, c.reltuples::bigint \
+            &format!("SELECT n.nspname, c.relname, c.relkind, c.reltuples::bigint \
              FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
-             WHERE c.relkind IN ('r','p','v','m','f') AND NOT c.relispartition \
-               AND n.nspname <> 'information_schema' AND n.nspname NOT LIKE 'pg\\_%' \
-             ORDER BY n.nspname = 'public' DESC, n.nspname, c.relname",
+             WHERE {READABLE_RELATION} AND NOT c.relispartition \
+             ORDER BY n.nspname = 'public' DESC, n.nspname, c.relname"),
         )
         .await?;
         Ok(rows
