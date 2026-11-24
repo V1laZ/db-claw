@@ -8,6 +8,7 @@ mod connection_dialog;
 mod control;
 mod drag;
 mod completion;
+mod conn_color;
 mod console;
 mod grid;
 mod navigator;

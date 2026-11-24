@@ -214,6 +214,7 @@ pub static METHODS: &[MethodSpec] = &[
             ("name", "string", "Display name (derived from the URL if omitted)", false),
             ("password", "string", "Password (optional)", false),
             ("read_only", "boolean", "Disable editing in the data grid", false),
+            ("color", "string", "Colour tag in the sidebar and on tabs: red, orange, yellow, green, cyan, blue, purple", false),
             ("connect", "boolean", "Connect right away (default true)", false),
         ],
     },

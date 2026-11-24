@@ -55,6 +55,10 @@ pub struct ConnectionConfig {
     /// the native console, but the grid becomes read-only).
     #[serde(default)]
     pub read_only: bool,
+    /// Colour tag shown in the sidebar and on tabs (e.g. red for production):
+    /// a preset name such as `red` or `green`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
 }
 
 /// Split a password out of a connection URL. Returns the URL without the

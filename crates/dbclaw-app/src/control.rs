@@ -311,6 +311,14 @@ impl Ctx {
                     url,
                     password: p_str(&params, "password").map(str::to_string).or(url_pw),
                     read_only: p_bool(&params, "read_only").unwrap_or(false),
+                    color: match p_str(&params, "color") {
+                        None | Some("") | Some("none") => None,
+                        Some(c) if crate::conn_color::PRESETS.iter().any(|(n, _)| *n == c) => Some(c.to_string()),
+                        Some(c) => bail!(
+                            "unknown color `{c}` (use one of: {})",
+                            crate::conn_color::PRESETS.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ")
+                        ),
+                    },
                 };
                 let id = config.id.clone();
                 self.ws(cx, |ws, _, cx| ws.state().update(cx, |s, cx| s.upsert(config, cx)))?;
@@ -689,7 +697,7 @@ impl Ctx {
                     };
                     json!({
                         "id": c.id, "name": c.name, "kind": c.kind, "url": c.url,
-                        "read_only": c.read_only, "status": status, "error": error, "server": server,
+                        "read_only": c.read_only, "color": c.color, "status": status, "error": error, "server": server,
                     })
                 })
                 .collect();

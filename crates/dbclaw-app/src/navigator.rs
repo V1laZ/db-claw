@@ -464,8 +464,21 @@ impl Navigator {
             }
         };
 
+        // Colour tag of the row's connection: a bar on the left edge of the connection
+        // and everything under it, so you can tell e.g. production apart at a glance.
+        let conn_id = match &row.kind {
+            RowKind::Conn { id, .. } => Some(id.as_str()),
+            RowKind::Db { conn, .. } | RowKind::Schema { conn, .. } | RowKind::Object { conn, .. } => Some(conn.as_str()),
+            RowKind::Info { .. } => None,
+        };
+        let tag = conn_id.and_then(|id| crate::conn_color::of_connection(&self.state, id, cx));
+        let theme = cx.theme();
         let el = h_flex()
             .id(("nav-row", ix))
+            .relative()
+            .when_some(tag, |this, color| {
+                this.child(div().absolute().left_0().top_0().bottom_0().w(px(3.)).bg(color))
+            })
             .h(px(24.))
             .pl(indent)
             .pr_2()

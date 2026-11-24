@@ -326,6 +326,11 @@ impl Workspace {
             .overflow_x_scroll()
             .children(self.tabs.iter().enumerate().map(|(ix, tab)| {
                 let active = ix == self.active;
+                let conn_id = match tab {
+                    Tab::Table(t) => t.read(cx).conn_id.clone(),
+                    Tab::Console(c) => c.read(cx).conn_id.clone(),
+                };
+                let tag = crate::conn_color::of_connection(&self.state, &conn_id, cx);
                 let (icon, title, dirty, running, sub) = match tab {
                     Tab::Table(t) => {
                         let t = t.read(cx);
@@ -361,6 +366,12 @@ impl Workspace {
                     .on_drop(cx.listener(move |this, d: &DraggedTab, _, cx| this.move_tab(d.ix, ix, cx)))
                     .when(active, |this| this.bg(theme.tab_active).text_color(theme.tab_active_foreground))
                     .when(!active, |this| this.text_color(theme.tab_foreground).hover(|s| s.bg(theme.list_hover)))
+                    // Connection colour tag: a tint behind the content and a line on top.
+                    .when_some(tag, |this, color| {
+                        this.relative()
+                            .child(div().absolute().inset_0().bg(color.opacity(if active { 0.16 } else { 0.10 })))
+                            .child(div().absolute().top_0().left_0().right_0().h(px(2.)).bg(color))
+                    })
                     .child(Icon::new(icon).small().text_color(theme.muted_foreground))
                     .child(div().truncate().child(title))
                     .when(dirty, |this| this.child(div().size(px(7.)).rounded_full().bg(theme.warning)))

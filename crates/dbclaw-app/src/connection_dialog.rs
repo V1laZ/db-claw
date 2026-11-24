@@ -9,6 +9,7 @@ use dbclaw_drivers::Connection;
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, Selectable as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex,
@@ -40,6 +41,8 @@ pub struct ConnectionForm {
     options: Entity<InputState>,
     password: Entity<InputState>,
     read_only: bool,
+    /// Colour tag preset (see `conn_color`).
+    color: Option<String>,
     testing: bool,
     test_result: Option<Result<String, String>>,
     name_touched: bool,
@@ -165,6 +168,7 @@ impl ConnectionForm {
             options,
             password,
             read_only: existing.as_ref().is_some_and(|c| c.read_only),
+            color: existing.as_ref().and_then(|c| c.color.clone()),
             testing: false,
             test_result: None,
             _subs: subs,
@@ -314,6 +318,7 @@ impl ConnectionForm {
             url,
             password: (!pw.is_empty()).then_some(pw),
             read_only: self.read_only,
+            color: self.color.clone(),
         })
     }
 
@@ -428,6 +433,47 @@ fn field(label: &'static str, input: impl IntoElement) -> impl IntoElement {
     v_flex().gap_1().child(div().text_sm().font_medium().child(label)).child(input)
 }
 
+impl ConnectionForm {
+    /// Colour tag swatches: none + presets. Shown in the sidebar and on tabs.
+    fn render_colors(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let swatch = |id: usize, color: Option<Hsla>, value: Option<&'static str>, label: &'static str| {
+            let selected = self.color.as_deref() == value;
+            div()
+                .id(("color", id))
+                .size(px(22.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .border_2()
+                .border_color(if selected { theme.foreground } else { gpui_kit::transparent_black() })
+                .cursor_pointer()
+                .child(
+                    div()
+                        .size(px(16.))
+                        .rounded_full()
+                        .map(|this| match color {
+                            Some(c) => this.bg(c),
+                            // "None": an empty ring.
+                            None => this.border_1().border_color(theme.muted_foreground),
+                        }),
+                )
+                .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.color = value.map(str::to_string);
+                    cx.notify();
+                }))
+        };
+        h_flex()
+            .gap_1()
+            .child(swatch(0, None, None, "None"))
+            .children(crate::conn_color::PRESETS.iter().enumerate().map(|(i, (name, label))| {
+                swatch(i + 1, crate::conn_color::resolve(Some(name), cx), Some(name), label)
+            }))
+    }
+}
+
 impl Render for ConnectionForm {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
@@ -482,6 +528,7 @@ impl Render for ConnectionForm {
             })
             .child(div().h(px(1.)).bg(theme.border))
             .child(field("Name", Input::new(&self.name)))
+            .child(field("Color", self.render_colors(cx)))
             .child(
                 Checkbox::new("read-only")
                     .label("Read-only (disable editing in the data grid)")

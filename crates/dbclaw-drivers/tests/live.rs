@@ -17,6 +17,7 @@ fn pg_config() -> ConnectionConfig {
         url: "postgres://dbclaw@localhost:54329/shop".into(),
         password: Some("dbclaw".into()),
         read_only: false,
+        color: None,
     }
 }
 
@@ -28,6 +29,7 @@ fn mongo_config() -> ConnectionConfig {
         url: "mongodb://dbclaw@localhost:27019/shop?authSource=admin".into(),
         password: Some("dbclaw".into()),
         read_only: false,
+        color: None,
     }
 }
 
