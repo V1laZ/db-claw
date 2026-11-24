@@ -55,6 +55,8 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("f2", EditCell, Some("TableView && !Input")),
         KeyBinding::new(platform_keys("secondary-shift-n"), SetNull, Some("TableView && !Input")),
         KeyBinding::new(platform_keys("secondary-c"), CopyValue, Some("TableView && !Input")),
+        // Query results in a console (the editor keeps its own copy).
+        KeyBinding::new(platform_keys("secondary-c"), CopyValue, Some("Console && !Input")),
         KeyBinding::new("escape", CancelEdit, Some("TableView")),
         KeyBinding::new(platform_keys("secondary-]"), NextPage, Some("TableView && !Input")),
         KeyBinding::new(platform_keys("secondary-["), PrevPage, Some("TableView && !Input")),

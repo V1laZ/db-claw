@@ -15,7 +15,7 @@ use gpui_kit::*;
 
 use crate::drag::{DraggedConnection, drop_marker};
 use crate::state::{AppEvent, AppState, LiveStatus};
-use crate::util::{group_digits, io};
+use crate::util::{group_digits, io, kbd};
 
 pub enum NavEvent {
     OpenObject { conn_id: String, object: ObjectRef },
@@ -689,7 +689,7 @@ impl Render for Navigator {
                             .icon(Icon::new(Lucide::Plus))
                             .ghost()
                             .small()
-                            .tooltip("New connection (⌘N)")
+                            .tooltip(format!("New connection ({})", kbd("secondary-n")))
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(NavEvent::NewConnection))),
                     ),
             )

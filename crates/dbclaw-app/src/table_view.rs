@@ -33,7 +33,7 @@ use crate::actions::*;
 use crate::completion::FilterCompletion;
 use crate::grid::{CellEditor, GridDelegate, PendingCell};
 use crate::record_dialog;
-use crate::util::{format_duration, group_digits, io};
+use crate::util::{format_duration, group_digits, io, kbd};
 
 /// Notification key for save errors (one per tab, cleared on success).
 struct SaveError;
@@ -904,18 +904,7 @@ impl TableView {
 
     /// Rows as tab-separated values, one line per row (pastes into spreadsheets).
     fn copy_rows_tsv(&self, rows: &[usize], cx: &mut App) {
-        let d = self.table.read(cx).delegate();
-        let clean = |s: String| s.replace(['\t', '\n', '\r'], " ");
-        let text = rows
-            .iter()
-            .map(|&r| {
-                (0..d.set.columns.len())
-                    .map(|c| clean(d.cell_value_text(r, c).unwrap_or_default()))
-                    .collect::<Vec<_>>()
-                    .join("\t")
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let text = self.table.read(cx).delegate().rows_tsv(rows);
         cx.write_to_clipboard(ClipboardItem::new_string(text));
     }
 
@@ -1591,7 +1580,10 @@ fn render_filter_help(cx: &App) -> AnyElement {
                 .border_color(theme.border)
                 .text_xs()
                 .text_color(theme.muted_foreground)
-                .child("Enter applies the filter. Ctrl+Space suggests fields and operators. Right-click a cell → Filter by this value."),
+                .child(format!(
+                    "Enter applies the filter. {} suggests fields and operators. Right-click a cell → Filter by this value.",
+                    kbd("ctrl-space")
+                )),
         )
         .into_any_element()
 }
@@ -1643,7 +1635,7 @@ impl Render for TableView {
                     .ghost()
                     .small()
                     .icon(Icon::new(Lucide::RefreshCw))
-                    .tooltip("Refresh (⌘R)")
+                    .tooltip(format!("Refresh ({})", kbd("secondary-r")))
                     .loading(self.loading)
                     .on_click(cx.listener(|this, _, _, cx| this.reload(true, cx))),
             )
@@ -1653,7 +1645,11 @@ impl Render for TableView {
                         .ghost()
                         .small()
                         .icon(Icon::new(Lucide::Plus))
-                        .tooltip(if self.conn.kind() == DbKind::Mongo { "Insert document (⌘I)" } else { "Insert row (⌘I)" })
+                        .tooltip(format!(
+                            "{} ({})",
+                            if self.conn.kind() == DbKind::Mongo { "Insert document" } else { "Insert row" },
+                            kbd("secondary-i")
+                        ))
                         .on_click(cx.listener(|this, _, window, cx| this.insert(None, window, cx))),
                 )
                 .child(
@@ -1661,7 +1657,7 @@ impl Render for TableView {
                         .ghost()
                         .small()
                         .icon(Icon::new(Lucide::Trash))
-                        .tooltip("Mark selected rows for deletion (⌘⌫)")
+                        .tooltip(format!("Mark selected rows for deletion ({})", kbd("secondary-backspace")))
                         .on_click(cx.listener(|this, _, window, cx| {
                             let rows = this.target_rows(cx);
                             if !rows.is_empty() {
@@ -1685,7 +1681,7 @@ impl Render for TableView {
                         .small()
                         .icon(Icon::new(Lucide::Save))
                         .label(format!("Save {pending} change{}", if pending == 1 { "" } else { "s" }))
-                        .tooltip("Save changes (⌘S)")
+                        .tooltip(format!("Save changes ({})", kbd("secondary-s")))
                         .loading(self.saving)
                         .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
                 )
@@ -1746,7 +1742,7 @@ impl Render for TableView {
                     .ghost()
                     .xsmall()
                     .icon(Icon::new(Lucide::ChevronLeft))
-                    .tooltip("Previous page (⌘[)")
+                    .tooltip(format!("Previous page ({})", kbd("secondary-[")))
                     .disabled(self.page == 0)
                     .on_click(cx.listener(|this, _, _, cx| {
                         let p = this.page.saturating_sub(1);
@@ -1760,7 +1756,7 @@ impl Render for TableView {
                     .ghost()
                     .xsmall()
                     .icon(Icon::new(Lucide::ChevronRight))
-                    .tooltip("Next page (⌘])")
+                    .tooltip(format!("Next page ({})", kbd("secondary-]")))
                     .disabled(!has_next)
                     .on_click(cx.listener(|this, _, _, cx| {
                         let p = this.page + 1;

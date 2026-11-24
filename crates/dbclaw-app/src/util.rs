@@ -59,6 +59,56 @@ pub fn single_line(s: &str, max_chars: usize) -> String {
     out
 }
 
+/// A keyboard shortcut for display in the platform's style, written like the key
+/// bindings: `kbd("secondary-shift-enter")` is `⇧⌘↵` on macOS and `Ctrl+Shift+Enter`
+/// on Windows and Linux (`secondary` = ⌘ on macOS, Ctrl elsewhere).
+pub fn kbd(keys: &str) -> String {
+    kbd_for(keys, cfg!(target_os = "macos"))
+}
+
+fn kbd_for(keys: &str, mac: bool) -> String {
+    let (mods, key) = match keys.rsplit_once('-') {
+        // A trailing "-" is the minus key itself ("ctrl--").
+        Some((m, "")) => (m.trim_end_matches('-'), "-"),
+        Some((m, k)) => (m, k),
+        None => ("", keys),
+    };
+    let has = |m: &str| mods.split('-').any(|x| x == m);
+    let (ctrl, alt, shift) = (has("ctrl"), has("alt"), has("shift"));
+    let cmd = has("cmd") || (mac && has("secondary"));
+    let ctrl = ctrl || (!mac && has("secondary"));
+    let key = match (key, mac) {
+        ("enter", true) => "↵".to_string(),
+        ("backspace", true) => "⌫".to_string(),
+        ("tab", true) => "⇥".to_string(),
+        ("escape", _) => "Esc".to_string(),
+        ("enter", false) => "Enter".to_string(),
+        ("backspace", false) => "Backspace".to_string(),
+        ("tab", false) => "Tab".to_string(),
+        ("space", _) => "Space".to_string(),
+        (k, _) => k.to_uppercase(),
+    };
+    if mac {
+        // macOS order: ⌃⌥⇧⌘ then the key, no separators.
+        let mut out = String::new();
+        for (on, sym) in [(ctrl, "⌃"), (alt, "⌥"), (shift, "⇧"), (cmd, "⌘")] {
+            if on {
+                out.push_str(sym);
+            }
+        }
+        out + &key
+    } else {
+        let mut parts: Vec<String> = Vec::new();
+        for (on, name) in [(ctrl, "Ctrl"), (alt, "Alt"), (shift, "Shift"), (cmd, "Win")] {
+            if on {
+                parts.push(name.to_string());
+            }
+        }
+        parts.push(key);
+        parts.join("+")
+    }
+}
+
 /// Move the item at `from` to position `to` (drag and drop reordering): it ends up
 /// after the item at `to` when moving right, before it when moving left.
 pub fn move_item<T>(items: &mut Vec<T>, from: usize, to: usize) {
@@ -79,6 +129,21 @@ mod tests {
         assert_eq!(group_digits(999), "999");
         assert_eq!(group_digits(1000), "1,000");
         assert_eq!(group_digits(1234567), "1,234,567");
+    }
+
+    #[test]
+    fn shortcuts_per_platform() {
+        assert_eq!(kbd_for("secondary-t", true), "⌘T");
+        assert_eq!(kbd_for("secondary-t", false), "Ctrl+T");
+        assert_eq!(kbd_for("secondary-shift-enter", true), "⇧⌘↵");
+        assert_eq!(kbd_for("secondary-shift-enter", false), "Ctrl+Shift+Enter");
+        assert_eq!(kbd_for("secondary-backspace", true), "⌘⌫");
+        assert_eq!(kbd_for("secondary-backspace", false), "Ctrl+Backspace");
+        assert_eq!(kbd_for("ctrl-space", true), "⌃Space");
+        assert_eq!(kbd_for("ctrl-space", false), "Ctrl+Space");
+        assert_eq!(kbd_for("secondary-]", false), "Ctrl+]");
+        assert_eq!(kbd_for("secondary-.", true), "⌘.");
+        assert_eq!(kbd_for("f2", false), "F2");
     }
 
     #[test]

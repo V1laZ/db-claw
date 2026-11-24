@@ -8,6 +8,7 @@ use dbclaw_drivers::{Connection, PgExecError, Session};
 use gpui_kit::assets::IconName as Lucide;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Editor, EditorState, InputEvent};
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::table::{DataTable, TableEvent, TableState};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, Selectable as _, Sizable as _, h_flex, v_flex,
@@ -23,7 +24,7 @@ use gpui_kit::component::input::CompletionProvider;
 use crate::actions::*;
 use crate::completion::{MongoCompletion, SharedCatalog, SqlCompletion};
 use crate::grid::GridDelegate;
-use crate::util::{format_duration, group_digits};
+use crate::util::{format_duration, group_digits, kbd};
 
 const ROW_LIMIT: usize = 10_000;
 
@@ -43,6 +44,8 @@ pub struct ConsoleView {
     last_elapsed: Option<Duration>,
     ran_text: Option<SharedString>,
     table: Entity<TableState<GridDelegate>>,
+    /// Right-click menu on the results (copy).
+    open_menu: Option<(Entity<PopupMenu>, Point<Pixels>, Subscription)>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -58,15 +61,23 @@ impl ConsoleView {
         cx: &mut Context<Self>,
     ) -> Self {
         let (language, initial) = match conn.kind() {
-            DbKind::Postgres => ("sql", "-- ⌘↵ runs the statement at the cursor (or the selection), ⇧⌘↵ runs everything\nSELECT now();\n".to_string()),
+            DbKind::Postgres => (
+                "sql",
+                format!(
+                    "-- {} runs the statement at the cursor (or the selection), {} runs everything\nSELECT now();\n",
+                    kbd("secondary-enter"),
+                    kbd("secondary-shift-enter")
+                ),
+            ),
             DbKind::Mongo => {
                 let c = collection.clone().unwrap_or_else(|| "collection".into());
                 let ident_ok = c.chars().all(|ch| ch.is_alphanumeric() || ch == '_');
                 let target = if ident_ok { format!("db.{c}") } else { format!("db.getCollection({c:?})") };
+                let run = kbd("secondary-enter");
                 (
                     "javascript",
                     format!(
-                        "// ⌘↵ runs the block at the cursor (or the selection). Blocks are separated by blank lines.\n{target}.find({{}}).limit(50)\n"
+                        "// {run} runs the block at the cursor (or the selection). Blocks are separated by blank lines.\n{target}.find({{}}).limit(50)\n"
                     ),
                 )
             }
@@ -107,14 +118,17 @@ impl ConsoleView {
             }),
             cx.observe(&table, |_, table, cx| crate::grid::sync_row_selection(&table, cx)),
             // Keep the grid's row selection in step with keyboard navigation.
-            cx.subscribe(&table, |_, table, ev: &TableEvent, cx| {
-                if let TableEvent::SelectCell(row, _) | TableEvent::SelectRow(row) = ev {
+            cx.subscribe_in(&table, window, |this, table, ev: &TableEvent, window, cx| match ev {
+                TableEvent::SelectCell(row, _) | TableEvent::SelectRow(row) => {
                     let row = *row;
                     table.update(cx, |t, cx| {
                         t.delegate_mut().table_selected(row);
                         cx.notify();
                     });
                 }
+                TableEvent::RightClickedCell(row, col) => this.open_result_menu(*row, Some(*col), window, cx),
+                TableEvent::RightClickedRow(Some(row)) => this.open_result_menu(*row, None, window, cx),
+                _ => {}
             }),
         ];
         Self {
@@ -133,9 +147,66 @@ impl ConsoleView {
             last_elapsed: None,
             ran_text: None,
             table,
+            open_menu: None,
             focus: cx.focus_handle(),
             _subs: subs,
         }
+    }
+
+    fn on_copy(&mut self, _: &CopyValue, _: &mut Window, cx: &mut Context<Self>) {
+        let t = self.table.read(cx);
+        if let Some(text) = t.delegate().copy_text(t.selection()) {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    /// Right-click on a result cell (`col` = table column, 0 = row number) or row.
+    fn open_result_menu(&mut self, row: usize, col: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        // Right-clicking outside the selection selects that row (as in file managers).
+        let rows: Vec<usize> = self.table.update(cx, |t, cx| {
+            let d = t.delegate_mut();
+            if !d.selected_rows.contains(&row) {
+                d.select_only(row);
+                cx.notify();
+            }
+            d.selected_rows.iter().copied().collect()
+        });
+        let table = self.table.downgrade();
+        let copy = move |what: Copy| {
+            let table = table.clone();
+            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                let Some(table) = table.upgrade() else { return };
+                let d = table.read(cx).delegate();
+                let text = match &what {
+                    Copy::Value(r, c) => d.cell_value_text(*r, *c),
+                    Copy::Rows(rows) => Some(d.rows_tsv(rows)),
+                };
+                if let Some(text) = text {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
+            }
+        };
+        let value_col = col.and_then(|c| c.checked_sub(1));
+        let menu = PopupMenu::build(window, cx, move |mut m, _, _| {
+            if rows.len() > 1 {
+                return m.item(
+                    PopupMenuItem::new(format!("Copy {} rows", rows.len()))
+                        .icon(Icon::new(Lucide::Copy))
+                        .on_click(copy(Copy::Rows(rows.clone()))),
+                );
+            }
+            if let Some(c) = value_col {
+                m = m.item(PopupMenuItem::new("Copy value").icon(Icon::new(Lucide::Copy)).on_click(copy(Copy::Value(row, c))));
+            }
+            m.item(PopupMenuItem::new("Copy row").icon(Icon::new(Lucide::Copy)).on_click(copy(Copy::Rows(vec![row]))))
+        });
+        menu.focus_handle(cx).focus(window, cx);
+        let sub = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, _, cx| {
+            this.open_menu = None;
+            cx.notify();
+        });
+        self.open_menu = Some((menu, window.mouse_position(), sub));
+        cx.notify();
     }
 
     pub fn title(&self) -> SharedString {
@@ -356,7 +427,7 @@ impl ConsoleView {
                 .justify_center()
                 .text_sm()
                 .text_color(theme.muted_foreground)
-                .child(if self.running.is_some() { "Running…" } else { "Run a query with ⌘↵" })
+                .child(if self.running.is_some() { "Running…".to_string() } else { format!("Run a query with {}", kbd("secondary-enter")) })
                 .into_any_element()
         } else if has_grid {
             div().flex_1().min_h_0().child(DataTable::new(&self.table).bordered(false)).into_any_element()
@@ -470,7 +541,7 @@ impl Render for ConsoleView {
                     .small()
                     .icon(Icon::new(Lucide::Play))
                     .label("Run")
-                    .tooltip("Run statement at cursor / selection (⌘↵)")
+                    .tooltip(format!("Run statement at cursor / selection ({})", kbd("secondary-enter")))
                     .loading(running)
                     .on_click(cx.listener(|this, _, window, cx| this.run(false, window, cx))),
             )
@@ -479,7 +550,7 @@ impl Render for ConsoleView {
                     .ghost()
                     .small()
                     .label("Run all")
-                    .tooltip("Run everything (⇧⌘↵)")
+                    .tooltip(format!("Run everything ({})", kbd("secondary-shift-enter")))
                     .on_click(cx.listener(|this, _, window, cx| this.run(true, window, cx))),
             )
             .when(running, |this| {
@@ -489,7 +560,7 @@ impl Render for ConsoleView {
                         .small()
                         .icon(Icon::new(Lucide::Square))
                         .label("Cancel")
-                        .tooltip("Cancel (⌘.)")
+                        .tooltip(format!("Cancel ({})", kbd("secondary-.")))
                         .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
                 )
             })
@@ -514,6 +585,7 @@ impl Render for ConsoleView {
             .on_action(cx.listener(Self::on_run))
             .on_action(cx.listener(Self::on_run_all))
             .on_action(cx.listener(Self::on_cancel))
+            .on_action(cx.listener(Self::on_copy))
             .child(toolbar)
             .child(
                 v_resizable("console-split")
@@ -524,7 +596,19 @@ impl Render for ConsoleView {
                     )
                     .child(resizable_panel().child(self.render_results(cx))),
             )
+            .when_some(self.open_menu.as_ref(), |this, (menu, position, _)| {
+                this.child(
+                    deferred(anchored().position(*position).snap_to_window_with_margin(px(8.)).child(menu.clone()))
+                        .with_priority(1),
+                )
+            })
     }
+}
+
+/// What a result-menu item copies.
+enum Copy {
+    Value(usize, usize),
+    Rows(Vec<usize>),
 }
 
 

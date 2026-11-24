@@ -119,6 +119,34 @@ impl GridDelegate {
         }
     }
 
+    /// Rows as tab-separated values, one line per row (pastes into spreadsheets).
+    pub fn rows_tsv(&self, rows: &[usize]) -> String {
+        let clean = |s: String| s.replace(['\t', '\n', '\r'], " ");
+        rows.iter()
+            .map(|&r| {
+                (0..self.set.columns.len())
+                    .map(|c| clean(self.cell_value_text(r, c).unwrap_or_default()))
+                    .collect::<Vec<_>>()
+                    .join("\t")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// What ⌘C copies for the table's `selection`: several selected rows as
+    /// tab-separated lines, otherwise the selected cell's value (or the selected row).
+    pub fn copy_text(&self, selection: TableSelection) -> Option<String> {
+        if self.selected_rows.len() > 1 {
+            let rows: Vec<usize> = self.selected_rows.iter().copied().collect();
+            return Some(self.rows_tsv(&rows));
+        }
+        match selection {
+            TableSelection::Cell(r, c) if c > 0 => self.cell_value_text(r, c - 1),
+            TableSelection::Cell(r, _) | TableSelection::Row(r) => Some(self.rows_tsv(&[r])),
+            _ => None,
+        }
+    }
+
     /// A mouse press on `row`: plain = select only it, Shift = range from the anchor,
     /// `toggle` (⌘ on macOS, Ctrl elsewhere) = add or remove it.
     pub fn click_row(&mut self, row: usize, shift: bool, toggle: bool) {

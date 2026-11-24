@@ -13,6 +13,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::util::kbd;
 use crate::actions::*;
 use crate::connection_dialog;
 use crate::console::ConsoleView;
@@ -397,7 +398,7 @@ impl Workspace {
                         .ghost()
                         .xsmall()
                         .icon(Icon::new(Lucide::Plus))
-                        .tooltip("New console (⌘T)")
+                        .tooltip(format!("New console ({})", kbd("secondary-t")))
                         .on_click(cx.listener(|this, _, window, cx| this.new_console(window, cx))),
                 ),
             )
@@ -419,10 +420,10 @@ impl Workspace {
     fn render_welcome(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let has_connections = !self.state.read(cx).connections.is_empty();
-        let shortcut = |keys: &'static str, what: &'static str| {
+        let shortcut = |keys: &str, what: &'static str| {
             h_flex()
                 .gap_3()
-                .child(div().w(px(70.)).text_right().font_family(theme.mono_font_family.clone()).child(keys))
+                .child(div().w(px(120.)).text_right().font_family(theme.mono_font_family.clone()).child(kbd(keys)))
                 .child(div().text_color(theme.muted_foreground).child(what))
         };
         v_flex()
@@ -458,13 +459,13 @@ impl Workspace {
                     .mt_4()
                     .gap_1()
                     .text_sm()
-                    .child(shortcut("⌘N", "New connection"))
-                    .child(shortcut("⌘T", "New query console"))
-                    .child(shortcut("⌘P", "Search tables"))
-                    .child(shortcut("⌘F", "Filter the current table"))
-                    .child(shortcut("⌘↵", "Run query"))
-                    .child(shortcut("⌘S", "Save staged changes"))
-                    .child(shortcut("⌘B", "Toggle sidebar")),
+                    .child(shortcut("secondary-n", "New connection"))
+                    .child(shortcut("secondary-t", "New query console"))
+                    .child(shortcut("secondary-p", "Search tables"))
+                    .child(shortcut("secondary-f", "Filter the current table"))
+                    .child(shortcut("secondary-enter", "Run query"))
+                    .child(shortcut("secondary-s", "Save staged changes"))
+                    .child(shortcut("secondary-b", "Toggle sidebar")),
             )
             .child(
                 h_flex()
