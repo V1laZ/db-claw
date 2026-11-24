@@ -145,7 +145,10 @@ impl PgConnection {
         let c = self.browse_client(&self.default_db).await?;
         let rows = simple_rows(
             &c.client,
-            "SELECT datname FROM pg_database WHERE NOT datistemplate AND datallowconn ORDER BY datname",
+            // Only databases this user may connect to (not every database on the server).
+            "SELECT datname FROM pg_database \
+             WHERE NOT datistemplate AND datallowconn AND has_database_privilege(datname, 'CONNECT') \
+             ORDER BY datname",
         )
         .await?;
         Ok(rows.iter().filter_map(|r| r.get(0).map(str::to_string)).collect())

@@ -140,8 +140,15 @@ impl MongoConnection {
     }
 
     pub async fn list_databases(&self) -> Result<Vec<String>> {
-        match self.client.list_database_names().await {
+        // Only databases this user has privileges on: admin-like users would otherwise
+        // see every database on the server (MongoDB 4.0.5+).
+        match self.client.list_database_names().authorized_databases(true).await {
             Ok(mut names) => {
+                // Roles like clusterMonitor count as "privileges" on every database
+                // without allowing to read any data; keep the ones the user can read.
+                if let Some(readable) = self.readable_databases().await {
+                    names.retain(|n| readable.can_read(n));
+                }
                 names.sort();
                 Ok(names)
             }
@@ -151,6 +158,18 @@ impl MongoConnection {
                 None => Err(e.into()),
             },
         }
+    }
+
+    /// Which databases the logged-in user may read (`find`), from `connectionStatus`.
+    /// `None` when the server doesn't say (e.g. authentication is off): don't filter.
+    async fn readable_databases(&self) -> Option<ReadableDatabases> {
+        let status = self
+            .client
+            .database("admin")
+            .run_command(doc! { "connectionStatus": 1, "showPrivileges": true })
+            .await
+            .ok()?;
+        ReadableDatabases::from_connection_status(&status)
     }
 
     pub async fn list_objects(&self, database: &str) -> Result<Vec<ObjectInfo>> {
@@ -897,4 +916,101 @@ pub fn docs_to_result_set(docs: Vec<Document>) -> ResultSet {
         c.type_name = t.join(" | ");
     }
     ResultSet { columns, rows, documents: Some(docs), ..Default::default() }
+}
+
+/// Databases a user may read, from `connectionStatus` with `showPrivileges`.
+#[derive(Debug, PartialEq)]
+pub(crate) enum ReadableDatabases {
+    All,
+    Some(std::collections::BTreeSet<String>),
+}
+
+impl ReadableDatabases {
+    pub(crate) fn from_connection_status(status: &Document) -> Option<Self> {
+        let auth = status.get_document("authInfo").ok()?;
+        // No authenticated user: authentication is off, everything is readable.
+        if auth.get_array("authenticatedUsers").map_or(true, |u| u.is_empty()) {
+            return None;
+        }
+        let privileges = auth.get_array("authenticatedUserPrivileges").ok()?;
+        let mut dbs = std::collections::BTreeSet::new();
+        for p in privileges.iter().filter_map(Bson::as_document) {
+            let can_find = p
+                .get_array("actions")
+                .is_ok_and(|a| a.iter().any(|x| x.as_str() == Some("find")));
+            if !can_find {
+                continue;
+            }
+            let Ok(resource) = p.get_document("resource") else { continue };
+            if resource.get_bool("anyResource").unwrap_or(false) {
+                return Some(Self::All);
+            }
+            // `find` on a system collection (e.g. clusterMonitor's `system.profile` in
+            // every database) doesn't make a database's data readable.
+            let collection = resource.get_str("collection").unwrap_or("");
+            if collection.starts_with("system.") {
+                continue;
+            }
+            match resource.get_str("db") {
+                // `db: ""` = any (non-system) database.
+                Ok("") if collection.is_empty() => return Some(Self::All),
+                Ok("") => {}
+                Ok(db) => {
+                    dbs.insert(db.to_string());
+                }
+                Err(_) => {}
+            }
+        }
+        Some(Self::Some(dbs))
+    }
+
+    pub(crate) fn can_read(&self, db: &str) -> bool {
+        match self {
+            Self::All => true,
+            Self::Some(dbs) => dbs.contains(db),
+        }
+    }
+}
+
+#[cfg(test)]
+mod readable_tests {
+    use super::*;
+
+    fn status(privileges: Bson) -> Document {
+        doc! { "authInfo": {
+            "authenticatedUsers": [{ "user": "u", "db": "admin" }],
+            "authenticatedUserPrivileges": privileges,
+        } }
+    }
+
+    #[test]
+    fn read_role_on_one_database() {
+        // read@shop + clusterMonitor (stats on every database, but no `find`)
+        let s = status(bson::bson!([
+            { "resource": { "db": "shop", "collection": "" }, "actions": ["find", "listCollections"] },
+            { "resource": { "db": "", "collection": "" }, "actions": ["dbStats", "collStats"] },
+            { "resource": { "db": "", "collection": "system.profile" }, "actions": ["find"] },
+            { "resource": { "db": "local", "collection": "" }, "actions": ["find"] },
+            { "resource": { "cluster": true }, "actions": ["listDatabases"] },
+        ]));
+        let r = ReadableDatabases::from_connection_status(&s).unwrap();
+        assert!(r.can_read("shop"));
+        assert!(r.can_read("local"));
+        assert!(!r.can_read("secret"));
+        assert!(!r.can_read("admin"));
+    }
+
+    #[test]
+    fn read_any_database_and_root() {
+        let any = status(bson::bson!([{ "resource": { "db": "", "collection": "" }, "actions": ["find"] }]));
+        assert_eq!(ReadableDatabases::from_connection_status(&any), Some(ReadableDatabases::All));
+        let root = status(bson::bson!([{ "resource": { "anyResource": true }, "actions": ["find", "insert"] }]));
+        assert_eq!(ReadableDatabases::from_connection_status(&root), Some(ReadableDatabases::All));
+    }
+
+    #[test]
+    fn no_authentication_means_no_filter() {
+        let s = doc! { "authInfo": { "authenticatedUsers": [], "authenticatedUserPrivileges": [] } };
+        assert_eq!(ReadableDatabases::from_connection_status(&s), None);
+    }
 }
