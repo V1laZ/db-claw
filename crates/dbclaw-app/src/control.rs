@@ -108,6 +108,18 @@ struct Ctx {
     workspace: Entity<Workspace>,
 }
 
+/// A colour tag preset name; empty / `none` = no colour.
+fn parse_color(value: Option<&str>) -> Result<Option<String>> {
+    match value.map(str::trim) {
+        None | Some("") | Some("none") => Ok(None),
+        Some(c) if crate::conn_color::PRESETS.iter().any(|(n, _)| *n == c) => Ok(Some(c.to_string())),
+        Some(c) => bail!(
+            "unknown color `{c}` (use one of: none, {})",
+            crate::conn_color::PRESETS.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ")
+        ),
+    }
+}
+
 /// `"shift"`, `"secondary"` (⌘ on macOS, Ctrl elsewhere), `"ctrl"`, `"alt"`, `"cmd"`,
 /// combined with `+` or `,`.
 fn parse_modifiers(spec: &str, cx: &App) -> Result<Modifiers> {
@@ -311,14 +323,8 @@ impl Ctx {
                     url,
                     password: p_str(&params, "password").map(str::to_string).or(url_pw),
                     read_only: p_bool(&params, "read_only").unwrap_or(false),
-                    color: match p_str(&params, "color") {
-                        None | Some("") | Some("none") => None,
-                        Some(c) if crate::conn_color::PRESETS.iter().any(|(n, _)| *n == c) => Some(c.to_string()),
-                        Some(c) => bail!(
-                            "unknown color `{c}` (use one of: {})",
-                            crate::conn_color::PRESETS.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ")
-                        ),
-                    },
+                    color: parse_color(p_str(&params, "color"))?,
+                    database_colors: Default::default(),
                 };
                 let id = config.id.clone();
                 self.ws(cx, |ws, _, cx| ws.state().update(cx, |s, cx| s.upsert(config, cx)))?;
@@ -329,6 +335,15 @@ impl Ctx {
                     return Ok(json!({ "id": id, "status": "connected" }));
                 }
                 Ok(json!({ "id": id, "status": "disconnected" }))
+            }
+            "set_color" => {
+                let conn = self.resolve_conn(cx, p_str(&params, "connection").ok_or_else(|| anyhow!("missing `connection`"))?)?;
+                let database = p_str(&params, "database").filter(|d| !d.is_empty()).map(str::to_string);
+                let color = parse_color(p_str(&params, "color"))?;
+                self.ws(cx, |ws, _, cx| {
+                    ws.state().update(cx, |s, cx| s.set_color(&conn.id, database.as_deref(), color.clone(), cx))
+                })?;
+                Ok(json!({ "ok": true, "connection": conn.name, "database": database, "color": color }))
             }
             "remove_connection" => {
                 let c = self.resolve_conn(cx, req_str(&params, "connection")?)?;
@@ -697,7 +712,7 @@ impl Ctx {
                     };
                     json!({
                         "id": c.id, "name": c.name, "kind": c.kind, "url": c.url,
-                        "read_only": c.read_only, "color": c.color, "status": status, "error": error, "server": server,
+                        "read_only": c.read_only, "color": c.color, "database_colors": c.database_colors, "status": status, "error": error, "server": server,
                     })
                 })
                 .collect();

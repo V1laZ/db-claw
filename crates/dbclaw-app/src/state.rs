@@ -71,6 +71,22 @@ impl AppState {
         self.persist(cx);
     }
 
+    /// Set the colour tag of a connection (`database` = `None`) or of one of its
+    /// databases; `None` clears it (a database then uses the connection's colour).
+    pub fn set_color(&mut self, id: &str, database: Option<&str>, color: Option<String>, cx: &mut Context<Self>) {
+        let Some(c) = self.connections.iter_mut().find(|c| c.id == id) else { return };
+        match (database, color) {
+            (None, color) => c.color = color,
+            (Some(db), Some(color)) => {
+                c.database_colors.insert(db.to_string(), color);
+            }
+            (Some(db), None) => {
+                c.database_colors.remove(db);
+            }
+        }
+        self.persist(cx);
+    }
+
     /// Move connection `id` to the position of `target` (sidebar drag and drop).
     /// The order is saved.
     pub fn move_connection(&mut self, id: &str, target: &str, cx: &mut Context<Self>) {

@@ -466,12 +466,13 @@ impl Navigator {
 
         // Colour tag of the row's connection: a bar on the left edge of the connection
         // and everything under it, so you can tell e.g. production apart at a glance.
-        let conn_id = match &row.kind {
-            RowKind::Conn { id, .. } => Some(id.as_str()),
-            RowKind::Db { conn, .. } | RowKind::Schema { conn, .. } | RowKind::Object { conn, .. } => Some(conn.as_str()),
+        let tag_of = match &row.kind {
+            RowKind::Conn { id, .. } => Some((id.as_str(), None)),
+            RowKind::Db { conn, db } | RowKind::Schema { conn, db, .. } => Some((conn.as_str(), Some(db.as_str()))),
+            RowKind::Object { conn, info } => Some((conn.as_str(), Some(info.object.database.as_str()))),
             RowKind::Info { .. } => None,
         };
-        let tag = conn_id.and_then(|id| crate::conn_color::of_connection(&self.state, id, cx));
+        let tag = tag_of.and_then(|(id, db)| crate::conn_color::of(&self.state, id, db, cx));
         let theme = cx.theme();
         let el = h_flex()
             .id(("nav-row", ix))
@@ -537,9 +538,9 @@ impl Navigator {
 
         let kind = row.kind.clone();
         let view = cx.entity().downgrade();
-        el.context_menu(move |menu, _window, cx| {
+        el.context_menu(move |menu, window, cx| {
             let view = view.clone();
-            build_menu(menu, &kind, view, cx)
+            build_menu(menu, &kind, view, window, cx)
         })
         .into_any_element()
     }
@@ -551,13 +552,60 @@ fn info_row(depth: usize, text: impl Into<SharedString>, error: bool) -> Row {
     Row { depth, kind: RowKind::Info { text: text.into(), error } }
 }
 
+/// "Color" submenu: the colour tag of a connection (`database` = `None`) or of one of
+/// its databases (which can also follow the connection's colour).
+fn color_submenu(
+    menu: gpui_kit::component::menu::PopupMenu,
+    view: WeakEntity<Navigator>,
+    conn: String,
+    database: Option<String>,
+    window: &mut Window,
+    cx: &mut Context<gpui_kit::component::menu::PopupMenu>,
+) -> gpui_kit::component::menu::PopupMenu {
+    let current = view.upgrade().and_then(|v| {
+        let state = v.read(cx).state.read(cx);
+        let c = state.config(&conn)?;
+        match &database {
+            None => c.color.clone(),
+            Some(db) => c.database_colors.get(db).cloned(),
+        }
+    });
+    menu.submenu_with_icon(Some(Icon::new(Lucide::Palette)), "Color", window, cx, move |sub, _, cx| {
+        let set = |value: Option<&'static str>| {
+            let (view, conn, database) = (view.clone(), conn.clone(), database.clone());
+            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                view.update(cx, |this, cx| {
+                    this.state.update(cx, |s, cx| s.set_color(&conn, database.as_deref(), value.map(str::to_string), cx))
+                })
+                .ok();
+            }
+        };
+        let none_label = if database.is_some() { "Same as connection" } else { "None" };
+        // The menu draws no check mark next to an icon, so the current choice shows a
+        // checked circle instead.
+        let mark = |selected: bool| Icon::new(if selected { Lucide::CircleCheck } else { Lucide::Circle });
+        let mut sub = sub.item(PopupMenuItem::new(none_label).icon(mark(current.is_none())).on_click(set(None)));
+        for (name, label) in crate::conn_color::PRESETS {
+            let mut icon = mark(current.as_deref() == Some(*name));
+            if let Some(c) = crate::conn_color::resolve(Some(name), cx) {
+                icon = icon.text_color(c);
+            }
+            sub = sub.item(
+                PopupMenuItem::new(*label).icon(icon).on_click(set(Some(name))),
+            );
+        }
+        sub
+    })
+}
+
 fn build_menu(
     menu: gpui_kit::component::menu::PopupMenu,
     kind: &RowKind,
     view: WeakEntity<Navigator>,
+    window: &mut Window,
     cx: &mut Context<gpui_kit::component::menu::PopupMenu>,
 ) -> gpui_kit::component::menu::PopupMenu {
-    let _ = cx;
+    let color_view = view.clone();
     let item = |label: &'static str, icon: Lucide, f: NavAction| {
         let view = view.clone();
         let f = std::rc::Rc::new(f);
@@ -579,6 +627,7 @@ fn build_menu(
             .item(item("Refresh", Lucide::RefreshCw, Box::new(move |this, _, cx| this.refresh_connection(&b, cx))))
             .separator()
             .item(item("Edit connection…", Lucide::Pencil, Box::new(move |_, _, cx| cx.emit(NavEvent::EditConnection(c.clone())))))
+            .map(|m| color_submenu(m, color_view.clone(), id.clone(), None, window, cx))
             .item(item("Disconnect", Lucide::Unplug, Box::new(move |this, _, cx| {
                 this.state.update(cx, |s, cx| s.disconnect(&d, cx));
             })))
@@ -586,11 +635,14 @@ fn build_menu(
             .item(item("Delete connection", Lucide::Trash, Box::new(move |_, _, cx| cx.emit(NavEvent::DeleteConnection(e.clone())))))
         }
         RowKind::Db { conn, db } => {
+            let (c3, d3) = (conn.clone(), db.clone());
             let (c1, d1, c2, d2) = (conn.clone(), db.clone(), conn, db);
             menu.item(item("New console", Lucide::SquareTerminal, Box::new(move |_, _, cx| {
                 cx.emit(NavEvent::OpenConsole { conn_id: c1.clone(), database: d1.clone(), collection: None })
             })))
             .item(item("Refresh", Lucide::RefreshCw, Box::new(move |this, _, cx| this.refresh_database(&c2, &d2, cx))))
+            .separator()
+            .map(|m| color_submenu(m, color_view.clone(), c3, Some(d3), window, cx))
         }
         RowKind::Schema { conn, db, .. } => {
             let (c1, d1) = (conn, db);

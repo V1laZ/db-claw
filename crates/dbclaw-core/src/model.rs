@@ -1,6 +1,7 @@
 //! Data model shared by drivers and UI: connection configuration, schema
 //! objects, result sets and staged row changes.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -59,6 +60,21 @@ pub struct ConnectionConfig {
     /// a preset name such as `red` or `green`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// Colour tags of individual databases (database name → preset), overriding
+    /// `color`, e.g. a MongoDB admin connection that sees dev and production.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub database_colors: BTreeMap<String, String>,
+}
+
+impl ConnectionConfig {
+    /// The colour tag for `database` (its own, else the connection's), or the
+    /// connection's when `database` is `None`.
+    pub fn color_for(&self, database: Option<&str>) -> Option<&str> {
+        database
+            .and_then(|db| self.database_colors.get(db))
+            .or(self.color.as_ref())
+            .map(String::as_str)
+    }
 }
 
 /// Split a password out of a connection URL. Returns the URL without the
@@ -413,6 +429,21 @@ impl std::fmt::Display for ApplySummary {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn database_colour_overrides_connection_colour() {
+        let mut c: super::ConnectionConfig =
+            serde_json::from_str(r#"{"id":"a","name":"a","kind":"mongo","url":"mongodb://h"}"#).unwrap();
+        assert_eq!(c.color_for(Some("prod")), None);
+        c.color = Some("green".into());
+        c.database_colors.insert("prod".into(), "red".into());
+        assert_eq!(c.color_for(None), Some("green"));
+        assert_eq!(c.color_for(Some("prod")), Some("red"));
+        assert_eq!(c.color_for(Some("dev")), Some("green"));
+        // Saved without the map when it's empty, and old files load without it.
+        c.database_colors.clear();
+        assert!(!serde_json::to_string(&c).unwrap().contains("database_colors"));
+    }
+
     use super::*;
 
     #[test]

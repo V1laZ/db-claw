@@ -326,11 +326,11 @@ impl Workspace {
             .overflow_x_scroll()
             .children(self.tabs.iter().enumerate().map(|(ix, tab)| {
                 let active = ix == self.active;
-                let conn_id = match tab {
-                    Tab::Table(t) => t.read(cx).conn_id.clone(),
-                    Tab::Console(c) => c.read(cx).conn_id.clone(),
+                let (conn_id, database) = match tab {
+                    Tab::Table(t) => (t.read(cx).conn_id.clone(), t.read(cx).object.database.clone()),
+                    Tab::Console(c) => (c.read(cx).conn_id.clone(), c.read(cx).database.clone()),
                 };
-                let tag = crate::conn_color::of_connection(&self.state, &conn_id, cx);
+                let tag = crate::conn_color::of(&self.state, &conn_id, Some(&database), cx);
                 let (icon, title, dirty, running, sub) = match tab {
                     Tab::Table(t) => {
                         let t = t.read(cx);

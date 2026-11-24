@@ -30,8 +30,9 @@ pub fn resolve(name: Option<&str>, cx: &App) -> Option<Hsla> {
     })
 }
 
-/// The colour of connection `conn_id`, if it has one.
-pub fn of_connection(state: &Entity<crate::state::AppState>, conn_id: &str, cx: &App) -> Option<Hsla> {
-    let name = state.read(cx).config(conn_id)?.color.clone();
+/// The colour of `database` on connection `conn_id` (its own, else the connection's),
+/// or of the connection itself when `database` is `None`.
+pub fn of(state: &Entity<crate::state::AppState>, conn_id: &str, database: Option<&str>, cx: &App) -> Option<Hsla> {
+    let name = state.read(cx).config(conn_id)?.color_for(database).map(str::to_string);
     resolve(name.as_deref(), cx)
 }

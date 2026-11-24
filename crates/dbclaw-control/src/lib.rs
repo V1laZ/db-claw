@@ -219,6 +219,15 @@ pub static METHODS: &[MethodSpec] = &[
         ],
     },
     MethodSpec {
+        name: "set_color",
+        description: "Set the colour tag of a connection, or of one database on it (e.g. red for production). A database without its own colour uses the connection's.",
+        params: &[
+            ("connection", "string", "Connection id, name or unique part of the name", true),
+            ("database", "string", "Database to colour; omit for the connection itself", false),
+            ("color", "string", "none, red, orange, yellow, green, cyan, blue or purple", true),
+        ],
+    },
+    MethodSpec {
         name: "remove_connection",
         description: "Delete a saved connection (the database is not touched). Closes its tabs.",
         params: &[CONN],

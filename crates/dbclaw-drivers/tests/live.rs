@@ -18,6 +18,7 @@ fn pg_config() -> ConnectionConfig {
         password: Some("dbclaw".into()),
         read_only: false,
         color: None,
+        database_colors: Default::default(),
     }
 }
 
@@ -30,6 +31,7 @@ fn mongo_config() -> ConnectionConfig {
         password: Some("dbclaw".into()),
         read_only: false,
         color: None,
+        database_colors: Default::default(),
     }
 }
 

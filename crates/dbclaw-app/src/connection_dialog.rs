@@ -43,6 +43,8 @@ pub struct ConnectionForm {
     read_only: bool,
     /// Colour tag preset (see `conn_color`).
     color: Option<String>,
+    /// Per-database colours (set from the sidebar), kept as they are.
+    database_colors: std::collections::BTreeMap<String, String>,
     testing: bool,
     test_result: Option<Result<String, String>>,
     name_touched: bool,
@@ -169,6 +171,7 @@ impl ConnectionForm {
             password,
             read_only: existing.as_ref().is_some_and(|c| c.read_only),
             color: existing.as_ref().and_then(|c| c.color.clone()),
+            database_colors: existing.as_ref().map(|c| c.database_colors.clone()).unwrap_or_default(),
             testing: false,
             test_result: None,
             _subs: subs,
@@ -319,6 +322,7 @@ impl ConnectionForm {
             password: (!pw.is_empty()).then_some(pw),
             read_only: self.read_only,
             color: self.color.clone(),
+            database_colors: self.database_colors.clone(),
         })
     }
 
