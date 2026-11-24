@@ -1,13 +1,13 @@
-Color-code connections and databases (e.g. red for production), and see only the databases you can access.
+The sidebar shows only the database in your connection, unless you choose to show all.
 
 ## What's new
 
-- **Color tags**: give a connection a color in the connection dialog, or right-click it in the sidebar → **Color**. It shows as a bar next to the connection and everything under it, and as a colored line and tint on its tabs, so you always know whether you're looking at production or dev.
-- **Per-database colors**: right-click a database → **Color** to override the connection's color, e.g. on a MongoDB admin connection that sees both dev and production databases. Tabs take the color of their database.
-- **Only accessible databases** in the sidebar:
-  - PostgreSQL lists the databases your user may connect to.
-  - MongoDB lists the databases your user can read. Users with monitoring roles no longer see every database on the server.
-- Automation: `add_connection` takes `color`, a new `set_color` method colors a connection or database, and the state reports the colors.
+- **Only your connection's database by default**: a connection that names a database (e.g. `…/shop`) lists just that one in the sidebar. Tick **Show all databases** in the connection dialog to list every database you can access, e.g. for a MongoDB admin connection that sees dev and production. Connections without a database (MongoDB's `authSource` doesn't count) still list all.
+- **PostgreSQL: only what you can read**: with all databases shown, PostgreSQL lists the databases that contain a table you can read (or that you own), and inside a database only the tables and views you have access to. No more tables that fail with *permission denied*.
+
+## After updating
+
+If your connection URL contains a database but you want to see the others too, edit the connection (right-click → *Edit connection…*) and tick **Show all databases**. Colors set on databases are kept.
 
 ## Downloads
 
