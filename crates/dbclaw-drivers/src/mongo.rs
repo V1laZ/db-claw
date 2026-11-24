@@ -92,6 +92,9 @@ fn pem_encode(out: &mut String, der: &[u8]) {
 pub struct MongoConnection {
     client: Client,
     default_db: Option<String>,
+    /// Set when the URL names a database (path, not `authSource`) and the
+    /// connection shouldn't list the others.
+    only_db: Option<String>,
     version: String,
     ref_cache: Cache<Vec<ForeignKey>>,
     sample_cache: Cache<Vec<Document>>,
@@ -122,9 +125,11 @@ impl MongoConnection {
         let auth_db = default_db.clone().unwrap_or_else(|| "admin".into());
         let info = client.database(&auth_db).run_command(doc! { "buildInfo": 1 }).await?;
         let version = info.get_str("version").unwrap_or("?").to_string();
+        let only_db = if config.show_all_databases { None } else { default_db.clone() };
         Ok(MongoConnection {
             client,
             default_db,
+            only_db,
             version: format!("MongoDB {version}"),
             ref_cache: StdMutex::new(HashMap::new()),
             sample_cache: StdMutex::new(HashMap::new()),
@@ -140,6 +145,9 @@ impl MongoConnection {
     }
 
     pub async fn list_databases(&self) -> Result<Vec<String>> {
+        if let Some(db) = &self.only_db {
+            return Ok(vec![db.clone()]);
+        }
         // Only databases this user has privileges on: admin-like users would otherwise
         // see every database on the server (MongoDB 4.0.5+).
         match self.client.list_database_names().authorized_databases(true).await {

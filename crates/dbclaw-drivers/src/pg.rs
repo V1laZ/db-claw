@@ -42,6 +42,8 @@ pub struct PgConnection {
     base: tokio_postgres::Config,
     tls: MakeTlsConnector,
     default_db: String,
+    /// Set when the connection names a database and shouldn't list the others.
+    only_db: Option<String>,
     version: String,
     databases: StdMutex<HashMap<String, Arc<PgDatabase>>>,
 }
@@ -67,10 +69,12 @@ impl PgConnection {
             .map(str::to_string)
             .or_else(|| base.get_user().map(str::to_string))
             .unwrap_or_else(|| "postgres".to_string());
+        let only_db = (!config.show_all_databases).then(|| base.get_dbname().map(str::to_string)).flatten();
         let conn = PgConnection {
             base,
             tls,
             default_db: default_db.clone(),
+            only_db,
             version: String::new(),
             databases: StdMutex::new(HashMap::new()),
         };
@@ -150,12 +154,16 @@ impl PgConnection {
         }
     }
 
-    /// Databases the user can actually use. Every user may connect to every database
+    /// The connection's database only, unless "show all databases" is on or the
+    /// connection names none. Then: databases the user can actually use. Every user may connect to every database
     /// by default (PUBLIC has CONNECT) and see its table names, so "may connect" isn't
     /// enough: keep databases the user owns or may create tables in, and otherwise those
     /// with at least one table it can read. Superusers and `pg_read_all_data` members
     /// see everything. The connection's own database is always listed.
     pub async fn list_databases(&self) -> Result<Vec<String>> {
+        if let Some(db) = &self.only_db {
+            return Ok(vec![db.clone()]);
+        }
         let c = self.browse_client(&self.default_db).await?;
         let reads_all = simple_scalar(
             &c.client,

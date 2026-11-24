@@ -41,6 +41,7 @@ pub struct ConnectionForm {
     options: Entity<InputState>,
     password: Entity<InputState>,
     read_only: bool,
+    show_all_databases: bool,
     /// Colour tag preset (see `conn_color`).
     color: Option<String>,
     /// Per-database colours (set from the sidebar), kept as they are.
@@ -170,6 +171,7 @@ impl ConnectionForm {
             options,
             password,
             read_only: existing.as_ref().is_some_and(|c| c.read_only),
+            show_all_databases: existing.as_ref().is_some_and(|c| c.show_all_databases),
             color: existing.as_ref().and_then(|c| c.color.clone()),
             database_colors: existing.as_ref().map(|c| c.database_colors.clone()).unwrap_or_default(),
             testing: false,
@@ -323,6 +325,7 @@ impl ConnectionForm {
             read_only: self.read_only,
             color: self.color.clone(),
             database_colors: self.database_colors.clone(),
+            show_all_databases: self.show_all_databases,
         })
     }
 
@@ -533,6 +536,15 @@ impl Render for ConnectionForm {
             .child(div().h(px(1.)).bg(theme.border))
             .child(field("Name", Input::new(&self.name)))
             .child(field("Color", self.render_colors(cx)))
+            .child(
+                Checkbox::new("show-all-databases")
+                    .label("Show all databases (otherwise only the one entered above)")
+                    .checked(self.show_all_databases)
+                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                        this.show_all_databases = *checked;
+                        cx.notify();
+                    })),
+            )
             .child(
                 Checkbox::new("read-only")
                     .label("Read-only (disable editing in the data grid)")

@@ -64,6 +64,10 @@ pub struct ConnectionConfig {
     /// `color`, e.g. a MongoDB admin connection that sees dev and production.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub database_colors: BTreeMap<String, String>,
+    /// List every database the user can access, not only the one named in the
+    /// connection. Without a database in the connection, all are listed anyway.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub show_all_databases: bool,
 }
 
 impl ConnectionConfig {

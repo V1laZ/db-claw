@@ -19,6 +19,7 @@ fn pg_config() -> ConnectionConfig {
         read_only: false,
         color: None,
         database_colors: Default::default(),
+        show_all_databases: true,
     }
 }
 
@@ -32,6 +33,7 @@ fn mongo_config() -> ConnectionConfig {
         read_only: false,
         color: None,
         database_colors: Default::default(),
+        show_all_databases: true,
     }
 }
 

@@ -325,6 +325,7 @@ impl Ctx {
                     read_only: p_bool(&params, "read_only").unwrap_or(false),
                     color: parse_color(p_str(&params, "color"))?,
                     database_colors: Default::default(),
+                    show_all_databases: p_bool(&params, "show_all_databases").unwrap_or(false),
                 };
                 let id = config.id.clone();
                 self.ws(cx, |ws, _, cx| ws.state().update(cx, |s, cx| s.upsert(config, cx)))?;
@@ -712,7 +713,7 @@ impl Ctx {
                     };
                     json!({
                         "id": c.id, "name": c.name, "kind": c.kind, "url": c.url,
-                        "read_only": c.read_only, "color": c.color, "database_colors": c.database_colors, "status": status, "error": error, "server": server,
+                        "read_only": c.read_only, "color": c.color, "database_colors": c.database_colors, "show_all_databases": c.show_all_databases, "status": status, "error": error, "server": server,
                     })
                 })
                 .collect();
